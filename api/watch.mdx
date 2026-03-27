@@ -1,0 +1,294 @@
+---
+title: 'watch'
+description: 'Single-value broadcast channel. One sender updates a value, many receivers observe changes. Mirrors tokio::sync::watch.'
+---
+
+## Import
+
+```typescript
+import { watch } from 'antiox/sync/watch';
+```
+
+## Rust equivalent
+
+[`tokio::sync::watch`](https://docs.rs/tokio/latest/tokio/sync/watch/)
+
+## Overview
+
+A watch channel holds a single value that the sender can update at any time. All receivers can read the current value without removing it. Receivers track which version they have last seen and can wait for the next change with `changed()`.
+
+Unlike mpsc or broadcast, no messages are buffered or queued. If the sender updates the value multiple times before a receiver calls `changed()`, the receiver only sees the latest value.
+
+The channel is created with an initial value. The sender can update it; receivers observe changes.
+
+## Usage example
+
+```typescript
+import { watch } from 'antiox/sync/watch';
+
+const [tx, rx] = watch('initial');
+const rx2 = tx.subscribe();
+
+tx.send('updated');
+await rx.changed();
+console.log(rx.borrowAndUpdate()); // 'updated'
+```
+
+### Configuration broadcast pattern
+
+A common pattern is to broadcast configuration or state updates to multiple consumers:
+
+```typescript
+import { watch } from 'antiox/sync/watch';
+import { spawn } from 'antiox/task';
+
+interface Config {
+  maxConnections: number;
+  timeout: number;
+}
+
+const [configTx, configRx] = watch<Config>({ maxConnections: 10, timeout: 5000 });
+
+// Worker reads config and reacts to changes
+spawn(async () => {
+  let rx = configRx;
+  while (true) {
+    const cfg = rx.borrowAndUpdate();
+    applyConfig(cfg);
+
+    try {
+      await rx.changed();
+    } catch {
+      break; // sender closed
+    }
+  }
+});
+
+// Update config at any time
+configTx.send({ maxConnections: 20, timeout: 3000 });
+```
+
+---
+
+## Functions
+
+### `watch`
+
+```typescript
+function watch<T>(initial: T): [WatchSender<T>, WatchReceiver<T>]
+```
+
+Creates a watch channel with an initial value.
+
+<ParamField path="initial" type="T" required>
+  The initial value held by the channel. Immediately visible to all receivers.
+</ParamField>
+
+**Returns** `[WatchSender<T>, WatchReceiver<T>]`. Additional receivers are created with `sender.subscribe()`.
+
+---
+
+## `WatchSender<T>`
+
+The sending half of a watch channel. Implements `Symbol.dispose`.
+
+### `send`
+
+```typescript
+send(value: T): void
+```
+
+Updates the current value and wakes all receivers waiting in `changed()`. Throws `SendError` if the sender is closed or all receivers have been closed.
+
+<ParamField path="value" type="T" required>
+  The new value to publish.
+</ParamField>
+
+**Throws** `SendError<T>` — the unsent value is preserved in `error.value`.
+
+### `sendIfModified`
+
+```typescript
+sendIfModified(modify: (current: T) => boolean): boolean
+```
+
+Calls `modify` with the current value. If `modify` returns `true`, increments the version counter and wakes all waiting receivers. If `modify` returns `false`, no notification is sent and the version is unchanged.
+
+Useful for conditional updates where you want to mutate-in-place and only notify receivers when something actually changed.
+
+<ParamField path="modify" type="(current: T) => boolean" required>
+  A function that receives the current value. Mutate it in place if desired. Return `true` to notify receivers, `false` to suppress notification.
+</ParamField>
+
+**Returns** `true` if receivers were notified, `false` otherwise (including when the sender or all receivers are closed).
+
+```typescript
+// Only notify receivers if the count actually changed
+tx.sendIfModified((state) => {
+  if (state.count === newCount) return false;
+  state.count = newCount;
+  return true;
+});
+```
+
+### `borrow`
+
+```typescript
+borrow(): T
+```
+
+Returns the current value without affecting any receiver's seen-version. Does not suspend.
+
+### `subscribe`
+
+```typescript
+subscribe(): WatchReceiver<T>
+```
+
+Creates a new receiver. The new receiver starts with the same seen-version as the initial receiver, meaning `changed()` will resolve immediately if any value has been sent since channel creation.
+
+**Returns** `WatchReceiver<T>`.
+
+### `isClosed`
+
+```typescript
+isClosed(): boolean
+```
+
+Returns `true` if all receivers have been closed.
+
+### `close` / `Symbol.dispose`
+
+```typescript
+close(): void
+[Symbol.dispose](): void
+```
+
+Closes the sender. Idempotent. Rejects all pending `changed()` calls with `RecvError`. The last-held value remains readable via `borrow()` on existing receivers.
+
+---
+
+## `WatchReceiver<T>`
+
+The receiving half of a watch channel. Each receiver tracks its own seen-version independently. Implements `Symbol.dispose`.
+
+### `borrow`
+
+```typescript
+borrow(): T
+```
+
+Returns the current value **without** marking it as seen. Does not affect whether a subsequent `changed()` call resolves immediately.
+
+```typescript
+// borrow does not advance the seen-version
+const value = rx.borrow();
+await rx.changed(); // still resolves if there was an unseen change
+```
+
+### `borrowAndUpdate`
+
+```typescript
+borrowAndUpdate(): T
+```
+
+Returns the current value **and** marks the current version as seen. A subsequent `changed()` call will suspend until the next send.
+
+```typescript
+const value = rx.borrowAndUpdate();
+await rx.changed(); // now waits for a new change
+```
+
+<Tip>
+  Use `borrowAndUpdate()` inside a change-watching loop to correctly reset the seen-version after each update:
+
+  ```typescript
+  while (true) {
+    const value = rx.borrowAndUpdate();
+    process(value);
+    await rx.changed();
+  }
+  ```
+</Tip>
+
+### `changed`
+
+```typescript
+changed(): Promise<void>
+```
+
+Resolves immediately if the current value has not been seen by this receiver (i.e., the version has advanced since the last `borrowAndUpdate()`). Otherwise suspends until the sender calls `send()` or `sendIfModified()` with a change.
+
+**Throws** `RecvError` if the sender is closed.
+
+<Note>
+  `borrow()` does not mark the value as seen. Only `borrowAndUpdate()` advances the receiver's seen-version. If you call `changed()` without ever calling `borrowAndUpdate()`, it may resolve immediately every time because the version was never marked as seen.
+</Note>
+
+### `clone`
+
+```typescript
+clone(): WatchReceiver<T>
+```
+
+Creates an independent receiver that starts at the **same seen-version** as the original. Useful for sharing change notifications across tasks without missing updates the original has not yet consumed.
+
+**Returns** `WatchReceiver<T>`.
+
+### `close` / `Symbol.dispose`
+
+```typescript
+close(): void
+[Symbol.dispose](): void
+```
+
+Closes this receiver and decrements the receiver count. Idempotent. When all receivers are closed, `tx.isClosed()` returns `true` and subsequent `tx.send()` calls throw `SendError`.
+
+---
+
+## Error types
+
+### `SendError<T>`
+
+Thrown by `WatchSender.send()` when the channel is closed or all receivers have been dropped. The attempted value is preserved in `error.value`.
+
+### `RecvError`
+
+Thrown (or used to reject `changed()`) when the sender closes before the receiver observes the next change.
+
+```typescript
+try {
+  await rx.changed();
+} catch (e) {
+  if (e instanceof RecvError) {
+    // sender closed; read final value if needed
+    const finalValue = rx.borrow();
+  }
+}
+```
+
+---
+
+## Edge cases
+
+<AccordionGroup>
+  <Accordion title="borrow vs borrowAndUpdate — understanding seen-version">
+    Every call to `send()` increments an internal version counter. Each receiver tracks the version it last acknowledged via `borrowAndUpdate()`. `borrow()` reads the value without updating the version, so the receiver is still considered to have an unseen change and `changed()` will resolve immediately.
+  </Accordion>
+
+  <Accordion title="Rapid sends — only latest value is visible">
+    If the sender calls `send()` multiple times before a receiver calls `changed()`, the receiver only ever sees the latest value. Earlier values are overwritten without any buffering.
+  </Accordion>
+
+  <Accordion title="Sender close leaves value readable">
+    After `tx.close()`, receivers can no longer call `changed()` (it rejects), but `rx.borrow()` and `rx.borrowAndUpdate()` still return the last value that was sent.
+  </Accordion>
+
+  <Accordion title="All receivers closed throws on send">
+    When `tx.isClosed()` returns `true` (all receivers gone), calling `tx.send()` throws `SendError`. Use `tx.isClosed()` to check before sending if receivers may have been dropped.
+  </Accordion>
+
+  <Accordion title="subscribe after all receivers closed">
+    Calling `tx.subscribe()` after all receivers have been closed creates a new receiver and makes `tx.isClosed()` return `false` again. The channel re-opens.
+  </Accordion>
+</AccordionGroup>

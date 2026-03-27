@@ -1,0 +1,87 @@
+---
+title: DropGuard
+description: Run a cleanup function when a scope exits, with optional disarming.
+---
+
+`DropGuard` ensures a cleanup function runs when the guard is disposed. It integrates with the TC39 `using` keyword (explicit resource management) for automatic, scope-bound cleanup. The guard can be disarmed if cleanup should be skipped.
+
+**Rust equivalent:** [`tokio_util::sync::DropGuard`](https://docs.rs/tokio-util/latest/tokio_util/sync/struct.DropGuard.html)
+
+## Import
+
+```typescript
+import { DropGuard } from "antiox/sync/drop_guard";
+```
+
+## Usage
+
+```typescript
+import { DropGuard } from "antiox/sync/drop_guard";
+
+const guard = new DropGuard(() => releaseResource());
+
+try {
+  await doWork();
+  guard.disarm(); // success — skip cleanup
+} catch {
+  // guard[Symbol.dispose]() will run cleanup
+  throw;
+}
+```
+
+### With the `using` keyword
+
+When your TypeScript target supports [explicit resource management](https://github.com/tc39/proposal-explicit-resource-management) (`"lib": ["esnext"]` and a compatible runtime), use `using` to bind the guard to the enclosing block:
+
+```typescript
+import { DropGuard } from "antiox/sync/drop_guard";
+
+async function processRequest() {
+  using guard = new DropGuard(() => metrics.recordRequestEnd());
+
+  metrics.recordRequestStart();
+  const result = await handleRequest();
+  guard.disarm(); // Don't record an end — caller will handle it
+  return result;
+} // If we reach here without disarming, cleanup runs automatically
+```
+
+## `DropGuard`
+
+### Constructor
+
+<ParamField path="constructor" type="new DropGuard(cleanup: () => void)">
+  Creates a guard that will call `cleanup` when disposed. The cleanup function is called at most once.
+</ParamField>
+
+### Methods
+
+<ParamField path="disarm" type="() => void">
+  Prevents the cleanup function from running. After calling `disarm()`, a subsequent `Symbol.dispose` call (or `using` block exit) is a no-op. Useful when an operation completes successfully and cleanup is no longer needed.
+
+  ```typescript
+  const guard = new DropGuard(() => rollbackTransaction());
+  await commitTransaction();
+  guard.disarm(); // commit succeeded, no rollback needed
+  ```
+</ParamField>
+
+<ParamField path="Symbol.dispose" type="() => void">
+  Runs the cleanup function if the guard has not been disarmed. Calling `Symbol.dispose` more than once is safe — the cleanup runs at most once.
+
+  ```typescript
+  const guard = new DropGuard(() => console.log("cleaned up"));
+  guard[Symbol.dispose](); // "cleaned up"
+  guard[Symbol.dispose](); // no-op
+  ```
+</ParamField>
+
+<Note>
+  `DropGuard` is intentionally minimal. It does not integrate with `CancellationToken` directly — if you need cancellation-driven cleanup, combine it with a `CancellationToken` and a `spawn`ed task that awaits `token.cancelled()` and then triggers the guard.
+</Note>
+
+## Related
+
+- [CancellationToken](/api/cancellation-token) — cooperative cancellation that propagates through a token tree
+- [Semaphore](/api/semaphore) — `SemaphorePermit` implements `Symbol.dispose` for auto-release
+- [Mutex](/api/mutex) — `MutexGuard` implements `Symbol.dispose` for auto-release

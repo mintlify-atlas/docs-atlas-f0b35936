@@ -1,0 +1,120 @@
+---
+title: select
+description: Race multiple async branches and cancel losers, with TypeScript type narrowing on the result.
+---
+
+`select` races several async operations and returns the result of whichever finishes first. All losing branches receive an `AbortSignal` that is aborted when the winner is determined, enabling cooperative cancellation.
+
+**Rust equivalent:** [`tokio::select!`](https://docs.rs/tokio/latest/tokio/macro.select.html)
+
+## Import
+
+```typescript
+import { select } from "antiox/sync/select";
+```
+
+## Usage
+
+```typescript
+import { select } from "antiox/sync/select";
+import { sleep } from "antiox/time";
+
+const result = await select({
+  msg: (signal) => rx.recv(),
+  timeout: (signal) => sleep(5000, signal),
+});
+
+if (result.key === "msg") {
+  console.log("Received:", result.value); // value is narrowed to recv()'s return type
+} else {
+  console.log("Timed out");
+}
+```
+
+## `select`
+
+```typescript
+function select<T extends Record<string, (signal: AbortSignal) => Promise<any>>>(
+  branches: T
+): Promise<SelectResult<T>>
+```
+
+<ParamField path="branches" type="Record<string, (signal: AbortSignal) => Promise<any>>" required>
+  An object where each key is a branch name and each value is a function that receives an `AbortSignal` and returns a promise. All branch functions are called immediately and raced with `Promise.race`. When one branch wins, the `AbortSignal` passed to all other branches is aborted.
+
+  ```typescript
+  const result = await select({
+    data:    (signal) => fetchData(signal),
+    timeout: (signal) => sleep(3000, signal),
+    cancel:  (signal) => shutdownToken.cancelled(),
+  });
+  ```
+</ParamField>
+
+### Return value
+
+`select` returns a `SelectResult<T>` — a discriminated union over the branch keys:
+
+```typescript
+type SelectResult<T> = {
+  [K in keyof T]: { key: K; value: Awaited<ReturnType<T[K]>> };
+}[keyof T];
+```
+
+TypeScript narrows the type of `result.value` when you check `result.key`:
+
+```typescript
+const result = await select({
+  number: (_) => Promise.resolve(42),
+  text:   (_) => Promise.resolve("hello"),
+});
+
+if (result.key === "number") {
+  // result.value: number
+} else {
+  // result.value: string
+}
+```
+
+## Cancelling losing branches with `AbortSignal`
+
+Each branch receives an `AbortSignal` that is aborted once a winner is determined. Pass the signal to any operation that supports it to enable cooperative cancellation:
+
+```typescript
+import { select } from "antiox/sync/select";
+import { sleep } from "antiox/time";
+
+const result = await select({
+  response: (signal) => fetch("https://api.example.com/data", { signal }),
+  timeout:  (signal) => sleep(5000, signal),
+});
+
+if (result.key === "response") {
+  const data = await result.value.json();
+} else {
+  console.log("Request timed out");
+}
+```
+
+If `fetch` finishes first, the `sleep` branch's signal is aborted and the timer is cleaned up. If `sleep` fires first, the `fetch` is aborted via its signal.
+
+<Note>
+  Not every async operation respects `AbortSignal`. If a branch function ignores the signal, it will continue running in the background after `select` resolves. Always pass the signal to operations that support it (native `fetch`, `sleep` from `antiox/time`, etc.).
+</Note>
+
+## Differences from `tokio::select!`
+
+`tokio::select!` is a macro with special syntax for pattern matching on futures. `select` in antiox is a plain function:
+
+| | `tokio::select!` | `select()` |
+|---|---|---|
+| Syntax | Macro (`select! { pat = fut => expr }`) | Function call |
+| Branch count | Determined at compile time | Any number of keys |
+| Cancellation | Drops losing futures | Aborts `AbortSignal` |
+| Type narrowing | Pattern matching | Discriminated union on `key` |
+
+## Related
+
+- [CancellationToken](/api/cancellation-token) — tree-structured cooperative cancellation
+- [Task](/api/task) — `spawn()` passes an `AbortSignal` to tasks
+- [Time](/api/time) — `sleep()` and `timeout()` accept `AbortSignal`

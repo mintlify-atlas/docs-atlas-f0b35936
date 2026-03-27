@@ -1,0 +1,285 @@
+---
+title: 'broadcast'
+description: 'Multi-producer, multi-consumer bounded channel where every active receiver gets every message. Mirrors tokio::sync::broadcast.'
+---
+
+## Import
+
+```typescript
+import { broadcast } from 'antiox/sync/broadcast';
+```
+
+## Rust equivalent
+
+[`tokio::sync::broadcast`](https://docs.rs/tokio/latest/tokio/sync/broadcast/)
+
+## Overview
+
+A broadcast channel delivers every message to every active receiver. Messages are stored in a fixed-size ring buffer. If a receiver falls too far behind and the buffer wraps, it receives a `RecvError` with `kind: 'lagged'` the next time it tries to receive. After a lag error, the receiver's cursor advances to the oldest available message.
+
+New receivers created via `subscribe()` start from the current write position; they do not see past messages.
+
+The channel stays open until all senders are closed. When the last sender closes, all pending `recv()` calls reject with a `RecvError` with `kind: 'closed'`.
+
+## Usage example
+
+```typescript
+import { broadcast } from 'antiox/sync/broadcast';
+
+const [tx, rx1] = broadcast<string>(16);
+const rx2 = tx.subscribe();
+
+tx.send('hello');
+console.log(await rx1.recv()); // 'hello'
+console.log(await rx2.recv()); // 'hello'
+```
+
+### Async iteration
+
+```typescript
+const [tx, rx] = broadcast<number>(16);
+
+tx.send(10);
+tx.send(20);
+tx.send(30);
+setTimeout(() => tx.close(), 100);
+
+for await (const msg of rx) {
+  console.log(msg); // 10, 20, 30
+}
+// loop exits cleanly on channel close
+```
+
+---
+
+## Functions
+
+### `broadcast`
+
+```typescript
+function broadcast<T>(capacity: number): [BroadcastSender<T>, BroadcastReceiver<T>]
+```
+
+Creates a broadcast channel backed by a ring buffer of `capacity` messages.
+
+<ParamField path="capacity" type="number" required>
+  Size of the ring buffer. Must be at least 1. Throws `RangeError` if less than 1.
+</ParamField>
+
+**Returns** `[BroadcastSender<T>, BroadcastReceiver<T>]`. Additional receivers are created with `sender.subscribe()`.
+
+---
+
+## `BroadcastSender<T>`
+
+The sending half of a broadcast channel. Multiple senders can share the channel via `clone()`. Implements `Symbol.dispose`.
+
+### `send`
+
+```typescript
+send(value: T): number
+```
+
+Publishes a value to the ring buffer and wakes all receivers waiting at the current write position. Returns the number of receivers that were actively waiting (i.e., had already called `recv()`).
+
+<ParamField path="value" type="T" required>
+  The value to broadcast.
+</ParamField>
+
+**Returns** `number` — count of receivers that were waiting and were immediately notified.
+
+**Throws** `Error` if the channel is closed.
+
+<Note>
+  A return value of `0` does not mean no receivers exist — it means no receivers were actively awaiting at the moment of the send. Receivers that have not yet called `recv()` will read the message from the buffer when they do.
+</Note>
+
+### `subscribe`
+
+```typescript
+subscribe(): BroadcastReceiver<T>
+```
+
+Creates a new receiver that starts from the current write position. Past messages are not visible to the new receiver.
+
+**Returns** `BroadcastReceiver<T>`.
+
+### `receiverCount`
+
+```typescript
+receiverCount(): number
+```
+
+Returns the current number of active receivers.
+
+### `clone`
+
+```typescript
+clone(): BroadcastSender<T>
+```
+
+Creates a new sender that shares the same channel. The channel stays open until all sender clones are closed.
+
+### `close` / `Symbol.dispose`
+
+```typescript
+close(): void
+[Symbol.dispose](): void
+```
+
+Closes this sender. Idempotent. When the last sender closes, all pending `recv()` calls reject with `RecvError` (`kind: 'closed'`).
+
+---
+
+## `BroadcastReceiver<T>`
+
+The receiving half of a broadcast channel. Each receiver independently tracks its position in the ring buffer. Implements `Symbol.asyncIterator` and `Symbol.dispose`.
+
+### `recv`
+
+```typescript
+recv(): Promise<T>
+```
+
+Receives the next message for this receiver. Suspends if no message is available yet.
+
+**Throws** `RecvError` with:
+- `kind: 'closed'` — all senders are closed and no more messages will arrive.
+- `kind: 'lagged'` — this receiver fell behind and messages were overwritten. The `lagged` field contains the exact count of missed messages. After a lag error, the cursor advances to the oldest still-available message.
+
+### `tryRecv`
+
+```typescript
+tryRecv(): T
+```
+
+Synchronously reads the next message without suspending.
+
+**Throws**:
+- `RecvError` with `kind: 'lagged'` if the receiver has fallen behind.
+- `RecvError` with `kind: 'closed'` if the channel is closed and buffer is empty.
+- `Error('No message available')` if the buffer has no new message for this receiver.
+
+### `clone`
+
+```typescript
+clone(): BroadcastReceiver<T>
+```
+
+Creates a new receiver starting at the **same cursor position** as the original. Both receivers will read the same subsequent messages independently.
+
+### `close` / `Symbol.dispose`
+
+```typescript
+close(): void
+[Symbol.dispose](): void
+```
+
+Closes this receiver and decrements the receiver count. Idempotent.
+
+### `Symbol.asyncIterator`
+
+```typescript
+[Symbol.asyncIterator](): AsyncIterableIterator<T>
+```
+
+Yields messages until the channel closes. Terminates cleanly on `kind: 'closed'`. Re-throws any `RecvError` with `kind: 'lagged'`, so you must handle lag errors inside the loop or let them propagate:
+
+```typescript
+try {
+  for await (const msg of rx) {
+    process(msg);
+  }
+} catch (e) {
+  if (e instanceof RecvError && e.kind === 'lagged') {
+    console.warn(`Missed ${e.lagged} messages, resuming...`);
+    // restart the loop or re-subscribe
+  }
+}
+```
+
+---
+
+## Error types
+
+### `RecvError`
+
+Thrown by `recv()` and `tryRecv()` to signal two distinct conditions:
+
+<ResponseField name="kind" type="'lagged' | 'closed'" required>
+  The error kind.
+</ResponseField>
+
+<ResponseField name="lagged" type="number">
+  Only present when `kind === 'lagged'`. The exact number of messages that were overwritten and missed.
+</ResponseField>
+
+```typescript
+try {
+  const msg = await rx.recv();
+} catch (e) {
+  if (e instanceof RecvError) {
+    if (e.kind === 'lagged') {
+      console.warn(`Missed ${e.lagged} messages`);
+      // cursor has advanced; next recv() reads the oldest available message
+    } else {
+      // kind === 'closed': channel is done
+    }
+  }
+}
+```
+
+---
+
+## Lag behavior
+
+The broadcast channel uses a fixed-size ring buffer. When the buffer wraps around and overwrites a slot that a slow receiver has not yet read, that receiver is considered **lagged**.
+
+<Warning>
+  A lagged receiver does not block senders. Messages are overwritten regardless. The lag error is delivered to the receiver the next time it calls `recv()` or `tryRecv()`.
+</Warning>
+
+After receiving a lag error, the receiver's cursor is advanced to the oldest available message, and normal reception resumes from there.
+
+```typescript
+const [tx, rx] = broadcast<number>(2);
+
+// Send 4 messages into a capacity-2 buffer
+tx.send(1);
+tx.send(2);
+tx.send(3);
+tx.send(4);
+
+try {
+  await rx.recv(); // throws RecvError { kind: 'lagged', lagged: 2 }
+} catch (e) {
+  if (e instanceof RecvError && e.kind === 'lagged') {
+    console.log(`Missed ${e.lagged} messages`);
+  }
+}
+
+console.log(await rx.recv()); // 3 (oldest available after lag)
+console.log(await rx.recv()); // 4
+```
+
+---
+
+## Edge cases
+
+<AccordionGroup>
+  <Accordion title="New subscribers do not see past messages">
+    `tx.subscribe()` creates a receiver that starts at the current write position. Any messages sent before the call are not visible to the new receiver.
+  </Accordion>
+
+  <Accordion title="Multiple senders — channel stays open until last closes">
+    When a cloned sender closes, the channel remains open if any other sender is still alive. Only when the last sender closes do pending `recv()` calls reject.
+  </Accordion>
+
+  <Accordion title="capacity must be at least 1">
+    `broadcast(0)` and `broadcast(-1)` throw `RangeError`.
+  </Accordion>
+
+  <Accordion title="Receiver clone shares the current cursor">
+    `rx.clone()` produces a receiver at the same read position. Both the original and the clone will read the same unread messages going forward, independently of each other.
+  </Accordion>
+</AccordionGroup>

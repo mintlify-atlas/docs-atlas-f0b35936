@@ -1,0 +1,102 @@
+---
+title: OnceCell
+description: Async lazy initialization — compute a value once and share it across tasks.
+---
+
+`OnceCell` holds a value that is initialized at most once. Multiple tasks can race to initialize it; only the first succeeds and all others wait for and share the result. Once set, the value is immutable.
+
+**Rust equivalent:** [`tokio::sync::OnceCell`](https://docs.rs/tokio/latest/tokio/sync/struct.OnceCell.html)
+
+## Import
+
+```typescript
+import { OnceCell } from "antiox/sync/once_cell";
+```
+
+## Usage
+
+```typescript
+import { OnceCell } from "antiox/sync/once_cell";
+
+interface Config {
+  apiUrl: string;
+  timeout: number;
+}
+
+const cell = new OnceCell<Config>();
+
+// Safe to call concurrently — only one fetch runs
+const config = await cell.getOrInit(async () => {
+  const res = await fetch("/config.json");
+  return res.json();
+});
+
+console.log(config.apiUrl);
+```
+
+## `OnceCell<T>`
+
+### Constructor
+
+```typescript
+const cell = new OnceCell<Config>();
+```
+
+Creates a new empty `OnceCell`. No constructor arguments.
+
+### Methods
+
+<ParamField path="get" type="() => T | undefined">
+  Returns the stored value synchronously, or `undefined` if the cell has not yet been initialized. Does not trigger initialization.
+
+  ```typescript
+  const val = cell.get();
+  if (val !== undefined) {
+    console.log("Already initialized:", val);
+  }
+  ```
+</ParamField>
+
+<ParamField path="set" type="(value: T) => boolean">
+  Sets the value if the cell is still empty. Returns `true` if the value was stored, `false` if the cell was already initialized (the existing value is preserved).
+
+  ```typescript
+  const stored = cell.set({ apiUrl: "https://api.example.com", timeout: 5000 });
+  if (!stored) {
+    console.log("Cell was already initialized");
+  }
+  ```
+</ParamField>
+
+<ParamField path="getOrInit" type="(init: () => Promise<T>) => Promise<T>">
+  Returns the existing value if already initialized. Otherwise, calls `init()` once to produce the value, stores it, and resolves all concurrent waiters with the same result.
+
+  If `init()` throws, the cell resets to empty and all concurrent waiters receive the same error. The next call to `getOrInit()` will retry.
+
+  ```typescript
+  const db = await cell.getOrInit(async () => connectToDatabase());
+  ```
+</ParamField>
+
+<ParamField path="getOrTryInit" type="(init: () => Promise<T>) => Promise<T>">
+  Identical to `getOrInit()`. Provided for parity with the Rust API (`get_or_try_init`). If `init()` throws, the cell resets to empty.
+</ParamField>
+
+<ParamField path="isInitialized" type="() => boolean">
+  Returns `true` if the cell has been successfully initialized.
+
+  ```typescript
+  if (!cell.isInitialized()) {
+    console.log("Not yet initialized");
+  }
+  ```
+</ParamField>
+
+<Note>
+  If multiple tasks call `getOrInit()` concurrently on an empty cell, only one `init()` function runs. All others suspend and receive the same value (or error) when initialization completes.
+</Note>
+
+## Related
+
+- [Mutex](/api/mutex) — protect mutable shared state across await points
+- [Watch channel](/api/watch) — broadcast a mutable value to many readers

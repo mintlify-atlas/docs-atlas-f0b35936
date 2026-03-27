@@ -1,0 +1,70 @@
+---
+title: "Installation"
+description: "Add Antiox to your TypeScript project."
+---
+
+## Install the package
+
+<CodeGroup>
+
+```bash npm
+npm install antiox
+```
+
+```bash yarn
+yarn add antiox
+```
+
+```bash pnpm
+pnpm add antiox
+```
+
+</CodeGroup>
+
+## Module system
+
+Antiox ships dual ESM and CJS output. Both module systems are supported without any extra configuration.
+
+Each primitive is a **separate subpath export**. There is no single monolithic entry point you are expected to import everything from. Import only the modules you need:
+
+```typescript
+import { channel } from "antiox/sync/mpsc";
+import { oneshot } from "antiox/sync/oneshot";
+import { spawn } from "antiox/task";
+import { sleep } from "antiox/time";
+import { panic, unreachable } from "antiox/panic";
+```
+
+Because every module is a separate entry point, bundlers can tree-shake unused modules automatically. A project that only uses `antiox/task` and `antiox/time` will not include any channel or stream code in its output.
+
+## Barrel import
+
+A convenience barrel export is available at `antiox` for modules that do not have name conflicts:
+
+```typescript
+import { spawn, sleep, Mutex, Semaphore } from "antiox";
+```
+
+<Note>
+  Modules that share type names across subpaths — such as `SendError` and `RecvError` — are only partially re-exported from the barrel. Use the subpath imports (`antiox/sync/mpsc`, `antiox/sync/oneshot`) when you need those specific types to avoid ambiguity.
+</Note>
+
+## TypeScript requirements
+
+Antiox is written in TypeScript and ships `.d.ts` declaration files for every subpath. No `@types` package is needed.
+
+Your `tsconfig.json` should target ES2022 or later and enable `moduleResolution: "bundler"` or `"node16"`/`"nodenext"` to resolve subpath exports correctly:
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler"
+  }
+}
+```
+
+<Tip>
+  If you are using `moduleResolution: "node"` (the classic resolver), subpath exports will not resolve. Upgrade to `"bundler"` or `"node16"` to get correct types for each import path.
+</Tip>

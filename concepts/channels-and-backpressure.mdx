@@ -1,0 +1,194 @@
+---
+title: "Channels and backpressure"
+description: "How antiox channels replace callbacks and event emitters, and how bounded channels give you automatic backpressure."
+keywords: ["channels", "backpressure", "mpsc", "oneshot", "broadcast", "watch", "async"]
+---
+
+Channels are typed, async conduits for passing values between tasks. They replace callbacks, event emitters, and shared mutable state with a pattern you already know from Rust: one end sends, the other receives.
+
+The biggest practical benefit is **backpressure**: when a producer is faster than its consumer, a bounded channel makes the producer wait instead of letting an unbounded queue grow forever.
+
+## Bounded vs unbounded
+
+Every channel in antiox comes in two flavors.
+
+| | Bounded | Unbounded |
+|---|---|---|
+| Capacity | Fixed at creation | Grows without limit |
+| `send()` | `async` — suspends when full | Synchronous, never suspends |
+| Backpressure | Automatic | None |
+| Use when | You want to rate-limit producers | Bursts are expected and safe |
+
+**Prefer bounded channels.** An unbounded channel that receives messages faster than it drains will eventually exhaust memory. Bounded channels make that failure visible at the send site instead of hours later in an OOM crash.
+
+```typescript
+import { channel, unboundedChannel } from "antiox/sync/mpsc";
+
+// Bounded: sender suspends when buffer is full
+const [tx, rx] = channel<string>(32);
+await tx.send("hello"); // may await if buffer full
+
+// Unbounded: sender never suspends
+const [utx, urx] = unboundedChannel<number>();
+utx.send(42); // sync, always succeeds
+```
+
+## How backpressure works
+
+When you call `await tx.send(value)` on a full bounded channel, the call suspends until the receiver drains at least one slot. No polling, no manual throttling — the channel's buffer is the signal.
+
+```typescript
+import { channel } from "antiox/sync/mpsc";
+import { spawn } from "antiox/task";
+
+const [tx, rx] = channel<number>(4); // buffer of 4
+
+// Slow consumer
+spawn(async () => {
+  for await (const n of rx) {
+    await slowProcess(n);
+  }
+});
+
+// Fast producer — automatically slows to match consumer
+for (let i = 0; i < 1000; i++) {
+  await tx.send(i); // suspends when buffer is full
+}
+```
+
+The producer loop above can never be more than 4 items ahead of the consumer. If you removed `await`, you'd be using `trySend()` and losing the backpressure guarantee.
+
+## Channel types
+
+<AccordionGroup>
+  <Accordion title="mpsc — multi-producer, single-consumer">
+    The workhorse channel. Multiple senders share one receiver. Clone the sender to hand it to other tasks.
+
+    ```typescript
+    import { channel } from "antiox/sync/mpsc";
+
+    const [tx, rx] = channel<string>(32);
+    const tx2 = tx.clone(); // second sender, same channel
+
+    await tx.send("from tx");
+    await tx2.send("from tx2");
+
+    const msg = await rx.recv(); // "from tx"
+
+    // Async iteration — exits cleanly when all senders drop
+    for await (const msg of rx) {
+      console.log(msg);
+    }
+    ```
+
+    The receiver's `for await` loop exits automatically when all senders are closed or garbage-collected. This gives you a clean shutdown without sentinel values.
+
+    <Tip>
+      Use mpsc for the actor pattern: one task owns mutable state and receives commands through the channel. Multiple producers send requests; one consumer serializes all access.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="oneshot — single-use, one value">
+    Send exactly one value from one task to another. The receiver implements `PromiseLike`, so you can `await` it directly.
+
+    ```typescript
+    import { oneshot } from "antiox/sync/oneshot";
+
+    const [tx, rx] = oneshot<string>();
+    tx.send("done");
+    const value = await rx; // "done"
+    ```
+
+    Oneshot channels are ideal for **request-response**: embed the sender in a message so the handler can reply.
+
+    ```typescript
+    import { channel } from "antiox/sync/mpsc";
+    import { oneshot, OneshotSender } from "antiox/sync/oneshot";
+
+    type Request =
+      | { type: "get"; resTx: OneshotSender<number> }
+      | { type: "set"; value: number };
+
+    const [cmdTx, cmdRx] = channel<Request>(16);
+
+    // Caller side
+    const [resTx, resRx] = oneshot<number>();
+    await cmdTx.send({ type: "get", resTx });
+    const current = await resRx;
+    ```
+  </Accordion>
+
+  <Accordion title="broadcast — multi-producer, multi-consumer">
+    Every active receiver gets every message. Backed by a fixed-size ring buffer; slow receivers that fall too far behind receive a `RecvError` with `kind: 'lagged'`.
+
+    ```typescript
+    import { broadcast } from "antiox/sync/broadcast";
+
+    const [tx, rx1] = broadcast<string>(16);
+    const rx2 = tx.subscribe(); // each subscriber gets its own cursor
+
+    tx.send("hello");
+    console.log(await rx1.recv()); // "hello"
+    console.log(await rx2.recv()); // "hello"
+    ```
+
+    <Note>
+      Unlike mpsc, `broadcast.send()` is synchronous and never suspends — it drops the oldest message if all slots are full. Handle `RecvError` with `kind: 'lagged'` if receivers must not miss messages.
+    </Note>
+  </Accordion>
+
+  <Accordion title="watch — single value, many observers">
+    One sender publishes the latest value; many receivers observe changes. Receivers never miss the current state — they always see the most recent value, even if they weren't listening when it was sent.
+
+    ```typescript
+    import { watch } from "antiox/sync/watch";
+
+    const [tx, rx] = watch("initial");
+    const rx2 = tx.subscribe();
+
+    tx.send("updated");
+
+    await rx.changed(); // resolves when a new value is sent
+    console.log(rx.borrowAndUpdate()); // "updated"
+    ```
+
+    Use watch for **configuration values**, **feature flags**, or any shared state where only the latest value matters and intermediate updates can be skipped.
+  </Accordion>
+</AccordionGroup>
+
+## Comparing channel types
+
+| Channel | Producers | Consumers | Value delivery | Backpressure | API page |
+|---------|-----------|-----------|----------------|--------------|----------|
+| `mpsc` | Many | One | Every message | Yes (bounded) | [mpsc](/api/mpsc) |
+| `oneshot` | One | One | Single value | N/A | [oneshot](/api/oneshot) |
+| `broadcast` | Many | Many | Every message (per receiver) | No (ring buffer) | [broadcast](/api/broadcast) |
+| `watch` | One | Many | Latest value only | No | [watch](/api/watch) |
+
+## Shutdown and disconnection
+
+Channels detect disconnection automatically.
+
+- **mpsc**: `rx.recv()` returns `null` when all senders are closed. The `for await` loop exits cleanly.
+- **oneshot**: `await rx` rejects with `RecvError` if the sender is disposed without sending.
+- **broadcast**: `rx.recv()` rejects with `RecvError { kind: 'closed' }` when the last sender closes.
+- **watch**: `rx.changed()` rejects when the sender is dropped.
+
+This means a `for await` loop over an mpsc receiver is your primary shutdown primitive — close all senders and the loop finishes on its own.
+
+```typescript
+import { channel } from "antiox/sync/mpsc";
+import { spawn } from "antiox/task";
+
+const [tx, rx] = channel<string>(8);
+
+const worker = spawn(async () => {
+  for await (const msg of rx) {
+    // process messages
+  }
+  // loop exits when tx is garbage-collected or tx.close() is called
+});
+
+tx.close(); // signals the worker to stop
+await worker;
+```

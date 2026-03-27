@@ -1,0 +1,245 @@
+---
+title: 'oneshot'
+description: 'Single-use channel for sending exactly one value. The receiver is directly awaitable. Mirrors tokio::sync::oneshot.'
+---
+
+## Import
+
+```typescript
+import { oneshot } from 'antiox/sync/oneshot';
+```
+
+## Rust equivalent
+
+[`tokio::sync::oneshot`](https://docs.rs/tokio/latest/tokio/sync/oneshot/)
+
+## Overview
+
+A oneshot channel sends exactly one value from a sender to a receiver. The receiver implements `PromiseLike<T>`, so you can `await` it directly or chain `.then()` on it. The function is named `oneshot()` rather than `channel()` to disambiguate from other channel constructors when used together.
+
+If the sender is dropped without sending a value, the receiver rejects with `RecvError`. If the receiver is closed before a value is sent, the sender throws `SendError`.
+
+## Usage example
+
+```typescript
+import { oneshot } from 'antiox/sync/oneshot';
+
+const [tx, rx] = oneshot<string>();
+tx.send('done');
+const value = await rx; // 'done'
+```
+
+### Request-response pattern
+
+Oneshot channels are the idiomatic way to implement typed request-response over an mpsc channel:
+
+```typescript
+import { channel } from 'antiox/sync/mpsc';
+import { oneshot, OneshotSender } from 'antiox/sync/oneshot';
+import { spawn } from 'antiox/task';
+
+type Msg =
+  | { type: 'increment'; amount: number }
+  | { type: 'get'; resTx: OneshotSender<number> };
+
+const [tx, rx] = channel<Msg>(32);
+
+spawn(async () => {
+  let count = 0;
+  for await (const msg of rx) {
+    if (msg.type === 'increment') count += msg.amount;
+    if (msg.type === 'get') msg.resTx.send(count);
+  }
+});
+
+await tx.send({ type: 'increment', amount: 5 });
+
+// Request-response via oneshot channel
+const [resTx, resRx] = oneshot<number>();
+await tx.send({ type: 'get', resTx });
+const value = await resRx;
+```
+
+---
+
+## Functions
+
+### `oneshot`
+
+```typescript
+function oneshot<T>(): [OneshotSender<T>, OneshotReceiver<T>]
+```
+
+Creates a oneshot channel. Returns a sender/receiver pair. Each pair can transfer exactly one value.
+
+**Returns** `[OneshotSender<T>, OneshotReceiver<T>]`.
+
+---
+
+## `OneshotSender<T>`
+
+The sending half of a oneshot channel. Implements `Symbol.dispose`.
+
+### `send`
+
+```typescript
+send(value: T): void
+```
+
+Sends the value to the receiver. Can only be called once. Throws `SendError` if the receiver is already closed, if a value was already sent, or if the sender has been disposed.
+
+<ParamField path="value" type="T" required>
+  The value to send. Any type including `null`, `undefined`, `0`, and `false`.
+</ParamField>
+
+**Throws** `SendError<T>` — the unsent value is preserved in `error.value`.
+
+### `isClosed`
+
+```typescript
+isClosed(): boolean
+```
+
+Returns `true` if the receiver has been closed. Sending a value when `isClosed()` is `true` will throw `SendError`.
+
+<Note>
+  `isClosed()` reports whether the **receiver** is closed, not whether the sender itself has been disposed. After calling `tx.send(value)` successfully, `isClosed()` is still `false` until the receiver is explicitly closed.
+</Note>
+
+### `closed`
+
+```typescript
+closed(): Promise<void>
+```
+
+Resolves when the receiver closes. Resolves immediately if the receiver is already closed. Useful for detecting when the other side is no longer interested.
+
+```typescript
+const [tx, rx] = oneshot<number>();
+
+void tx.closed().then(() => {
+  console.log('receiver closed, aborting work');
+});
+
+rx.close(); // triggers the above
+```
+
+### `Symbol.dispose`
+
+```typescript
+[Symbol.dispose](): void
+```
+
+Drops the sender without sending a value. If the receiver is waiting, it rejects with `RecvError`. Idempotent.
+
+```typescript
+{
+  using tx = oneshotTx; // Symbol.dispose called at end of block
+} // receiver rejects if no value was sent
+```
+
+---
+
+## `OneshotReceiver<T>`
+
+The receiving half of a oneshot channel. Implements `PromiseLike<T>` and `Symbol.dispose`.
+
+### `then` (PromiseLike)
+
+```typescript
+then<TResult1, TResult2>(
+  onfulfilled?: (value: T) => TResult1 | PromiseLike<TResult1>,
+  onrejected?: (reason: any) => TResult2 | PromiseLike<TResult2>
+): Promise<TResult1 | TResult2>
+```
+
+Makes `OneshotReceiver<T>` directly awaitable and chainable. `await rx` suspends until the sender calls `send()`. Rejects with `RecvError` if the sender drops without sending.
+
+```typescript
+const value = await rx;          // await directly
+const doubled = await rx.then(v => v * 2); // or chain
+```
+
+<Note>
+  Awaiting the receiver multiple times after a value has been sent is safe and returns the same value each time.
+</Note>
+
+### `tryRecv`
+
+```typescript
+tryRecv(): T
+```
+
+Synchronously retrieves the value if already sent. Does not suspend.
+
+**Throws** `RecvError` if no value has been sent yet (or the sender was disposed without sending). Calling `tryRecv()` after a successful send can be repeated safely; it returns the same value each time.
+
+### `close`
+
+```typescript
+close(): void
+```
+
+Closes the receiver, signaling that the value is no longer needed. If the sender calls `send()` after this, it throws `SendError`. Idempotent.
+
+### `Symbol.dispose`
+
+```typescript
+[Symbol.dispose](): void
+```
+
+Closes the receiver. Equivalent to `close()`. Idempotent.
+
+---
+
+## Error types
+
+### `SendError<T>`
+
+Thrown by `OneshotSender.send()` when the send fails. The attempted value is available on `error.value`.
+
+```typescript
+try {
+  tx.send(42);
+} catch (e) {
+  if (e instanceof SendError) {
+    console.log(e.value); // 42
+  }
+}
+```
+
+### `RecvError`
+
+Thrown by `OneshotReceiver.tryRecv()` and used to reject the receiver promise when the sender drops without sending a value.
+
+```typescript
+try {
+  const value = await rx;
+} catch (e) {
+  if (e instanceof RecvError) {
+    console.log('sender dropped without sending');
+  }
+}
+```
+
+---
+
+## Edge cases
+
+<AccordionGroup>
+  <Accordion title="Sender dropped without sending">
+    If `tx[Symbol.dispose]()` is called (or the sender goes out of scope in an `using` block) before `tx.send()`, the receiver promise rejects with `RecvError`.
+  </Accordion>
+
+  <Accordion title="Double send throws">
+    Calling `tx.send()` a second time throws `SendError` with the second value preserved in `error.value`. This applies even after a successful first send.
+  </Accordion>
+
+  <Accordion title="Falsy values are valid">
+    `0`, `false`, `''`, `null`, and `undefined` are all valid values that can be sent and received correctly.
+  </Accordion>
+
+  <Accordion title="Receiver closed before send">
+    If `rx.close()` is called before `tx.send()`, the send throws `SendError`. Use `tx.isClosed()` or `await tx.closed()` to check before sending.
+  </Accordion>
+</AccordionGroup>

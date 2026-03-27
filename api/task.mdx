@@ -1,0 +1,315 @@
+---
+title: 'task'
+description: 'Spawn and manage async tasks with cooperative cancellation. TypeScript equivalent of tokio::task.'
+keywords: ['task', 'spawn', 'JoinHandle', 'JoinSet', 'joinAll', 'tryJoinAll', 'yieldNow', 'concurrency']
+---
+
+Module: `antiox/task` — Rust equivalent: [`tokio::task`](https://docs.rs/tokio/latest/tokio/task/)
+
+Task spawning with cooperative cancellation via `AbortSignal`. Every spawned task receives a signal that is aborted when `.abort()` is called on its handle.
+
+```typescript
+import { spawn, JoinSet, joinAll, tryJoinAll, yieldNow, JoinHandle, JoinError } from "antiox/task";
+```
+
+---
+
+## `spawn`
+
+```typescript
+function spawn<T>(fn: (signal: AbortSignal) => Promise<T>): JoinHandle<T>
+```
+
+Spawns an async task and returns a `JoinHandle`. Execution is deferred to the next microtask — the task body does not run synchronously.
+
+The `signal` parameter is an `AbortSignal` that is triggered when `handle.abort()` is called. Pass it to any abort-aware API (like `fetch`) to enable cooperative cancellation.
+
+```typescript
+const handle = spawn(async (signal) => {
+  const res = await fetch("https://example.com", { signal });
+  return res.text();
+});
+
+const result = await handle;
+```
+
+Errors thrown inside the task are wrapped in a `JoinError` with the original error as `.cause`. If the task is aborted, the `JoinError` has `.cancelled` set to `true`.
+
+---
+
+## `JoinHandle<T>`
+
+Awaitable handle to a spawned task. Implements `PromiseLike<T>`.
+
+<AccordionGroup>
+  <Accordion title="Properties and methods">
+
+  **`.signal: AbortSignal`**
+
+  The `AbortSignal` passed into the task function. Useful for checking cancellation state from outside the task.
+
+  **`.abort(): void`**
+
+  Aborts the task by firing its `AbortController`. If the task has already completed, this is a no-op. Awaiting the handle after aborting rejects with a `JoinError` where `.cancelled === true`.
+
+  ```typescript
+  handle.abort();
+  try {
+    await handle;
+  } catch (e) {
+    if (e instanceof JoinError && e.cancelled) {
+      console.log("task was cancelled");
+    }
+  }
+  ```
+
+  **`.isFinished(): boolean`**
+
+  Returns `true` once the task has either resolved or rejected. Useful for polling without awaiting.
+
+  ```typescript
+  const handle = spawn(async () => heavyWork());
+  // ... later
+  if (handle.isFinished()) {
+    const result = await handle;
+  }
+  ```
+
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  `JoinHandle` implements `PromiseLike`, so you can `await` it directly or chain `.then()` on it like any promise.
+</Tip>
+
+---
+
+## `JoinSet<T>`
+
+Manages a dynamic collection of tasks. Results are yielded in completion order, not spawn order. Implements `Symbol.asyncIterator` and `Symbol.dispose`.
+
+```typescript
+const set = new JoinSet<number>();
+set.spawn(async () => 1);
+set.spawn(async () => 2);
+set.spawn(async () => 3);
+
+for await (const result of set) {
+  console.log(result); // 1, 2, 3 in completion order
+}
+```
+
+<AccordionGroup>
+  <Accordion title=".spawn(fn)">
+
+  ```typescript
+  spawn(fn: (signal: AbortSignal) => Promise<T>): JoinHandle<T>
+  ```
+
+  Spawns a new task into the set and returns its `JoinHandle`. The task is automatically removed from the set when it settles.
+
+  ```typescript
+  const set = new JoinSet<string>();
+  const handle = set.spawn(async (signal) => {
+    const res = await fetch(url, { signal });
+    return res.text();
+  });
+  ```
+
+  </Accordion>
+
+  <Accordion title=".joinNext()">
+
+  ```typescript
+  joinNext(): Promise<T | null>
+  ```
+
+  Waits for the next task to complete and returns its value. Returns `null` when the set is empty. Throws if the completed task threw an error.
+
+  ```typescript
+  const set = new JoinSet<number>();
+  set.spawn(async () => 42);
+
+  const result = await set.joinNext(); // 42
+  const done = await set.joinNext();   // null — set is now empty
+  ```
+
+  </Accordion>
+
+  <Accordion title=".abortAll()">
+
+  ```typescript
+  abortAll(): void
+  ```
+
+  Calls `.abort()` on every pending task in the set. Tasks that have already finished are unaffected.
+
+  ```typescript
+  set.abortAll();
+  ```
+
+  `JoinSet` also implements `Symbol.dispose`, so using it in a `using` block will automatically call `abortAll()` when the block exits:
+
+  ```typescript
+  {
+    using set = new JoinSet<void>();
+    set.spawn(longRunningTask);
+    // abortAll() is called automatically here
+  }
+  ```
+
+  </Accordion>
+
+  <Accordion title=".size">
+
+  ```typescript
+  size: number
+  ```
+
+  The number of tasks currently pending in the set (not yet settled).
+
+  ```typescript
+  console.log(set.size); // 3
+  ```
+
+  </Accordion>
+
+  <Accordion title="Symbol.asyncIterator — yields in completion order">
+
+  Iterating a `JoinSet` with `for await` yields results as tasks complete, in completion order. The loop ends when all tasks have settled.
+
+  ```typescript
+  const set = new JoinSet<number>();
+  set.spawn(async () => 1);
+  set.spawn(async () => 2);
+  set.spawn(async () => 3);
+
+  for await (const result of set) {
+    console.log(result); // 1, 2, 3 (in completion order)
+  }
+  ```
+
+  If any task throws, the error propagates out of the `for await` loop.
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `joinAll`
+
+```typescript
+function joinAll<T>(handles: JoinHandle<T>[]): Promise<T[]>
+```
+
+Waits for all handles to settle, then returns results in the same order as the input array. If any task failed, throws the first error encountered after all tasks have completed.
+
+```typescript
+const handles = [
+  spawn(async () => fetchUser(1)),
+  spawn(async () => fetchUser(2)),
+  spawn(async () => fetchUser(3)),
+];
+
+const [user1, user2, user3] = await joinAll(handles);
+```
+
+<Note>
+  `joinAll` always waits for every task to finish before throwing, even if some fail. Use `tryJoinAll` if you want to cancel remaining tasks on the first failure.
+</Note>
+
+---
+
+## `tryJoinAll`
+
+```typescript
+function tryJoinAll<T>(handles: JoinHandle<T>[]): Promise<T[]>
+```
+
+Like `joinAll`, but cancels all remaining tasks and rejects on the first failure. Mirrors the behavior of `futures::future::try_join_all`.
+
+```typescript
+try {
+  const results = await tryJoinAll([
+    spawn(async () => stepOne()),
+    spawn(async () => stepTwo()),
+    spawn(async () => stepThree()),
+  ]);
+} catch (e) {
+  // First failing task aborted the others
+  console.error("pipeline failed:", e);
+}
+```
+
+---
+
+## `yieldNow`
+
+```typescript
+function yieldNow(): Promise<void>
+```
+
+Yields control back to the event loop, allowing other pending microtasks or macrotasks to run before continuing.
+
+```typescript
+for (let i = 0; i < bigList.length; i++) {
+  process(bigList[i]);
+  if (i % 100 === 0) {
+    await yieldNow(); // let other tasks breathe
+  }
+}
+```
+
+<Tip>
+  Use `yieldNow` in CPU-bound loops to prevent starving the event loop. It resolves via `setTimeout(0)`, so it yields to macrotasks as well as microtasks.
+</Tip>
+
+---
+
+## `JoinError`
+
+All task errors are wrapped in a `JoinError` before being re-thrown from a `JoinHandle` or `JoinSet`.
+
+```typescript
+class JoinError extends Error {
+  readonly cancelled: boolean;
+  readonly cause: unknown;
+}
+```
+
+| Property | Type | Description |
+|---|---|---|
+| `name` | `"JoinError"` | Always `"JoinError"`. Use with `instanceof` for type narrowing. |
+| `cancelled` | `boolean` | `true` if the task was aborted via `.abort()`. `false` if the task threw on its own. |
+| `cause` | `unknown` | The original error thrown inside the task. |
+| `message` | `string` | `"Task was aborted"` when cancelled, `"Task failed"` otherwise. |
+
+```typescript
+const handle = spawn(async () => {
+  throw new Error("something went wrong");
+});
+
+try {
+  await handle;
+} catch (e) {
+  if (e instanceof JoinError) {
+    console.log(e.cancelled);          // false
+    console.log(e.cause);              // Error: something went wrong
+    console.log(e instanceof JoinError); // true
+  }
+}
+```
+
+---
+
+## Not implemented
+
+The following Tokio APIs are not implemented. See [COMPATIBILITY.md](https://github.com/rivet-dev/antiox/blob/main/COMPATIBILITY.md) for full details.
+
+| Rust | Reason |
+|---|---|
+| `spawn_blocking()` | N/A — JS is single-threaded. Use Web Workers directly. |
+| `spawn_local()` | N/A — JS tasks are already local to the event loop. |
+| `AbortHandle` | `JoinHandle.abort()` covers the primary use case. |
+| `task::Id` | Not yet implemented. |
+| `JoinSet::try_join_next()` | Not yet implemented. |

@@ -1,0 +1,677 @@
+---
+title: 'stream'
+description: 'Async stream combinators over AsyncIterable<T>. TypeScript equivalent of tokio_stream and futures::stream.'
+keywords: ['stream', 'AsyncIterable', 'map', 'filter', 'collect', 'merge', 'pipe', 'bufferUnordered', 'combinators']
+---
+
+Module: `antiox/stream` — Rust equivalent: [`tokio_stream`](https://docs.rs/tokio-stream/latest/tokio_stream/) / [`futures::stream`](https://docs.rs/futures/latest/futures/stream/)
+
+Async stream combinators. All functions accept and return `AsyncIterable<T>`. No wrapper objects — just plain async generators and iterable protocol.
+
+```typescript
+import {
+  map, filter, collect, pipe, merge, bufferUnordered, chunks,
+  // ... and more
+} from "antiox/stream";
+```
+
+---
+
+## Why `pipe`?
+
+In Rust, `StreamExt` adds methods directly to streams via trait implementations, enabling `stream.map(f).filter(g).collect()`. JavaScript has no equivalent mechanism — you cannot add methods to `AsyncIterable` without wrapping it.
+
+The TC39 pipe operator proposal (`|>`) has been at Stage 2 for years. Until it lands, `pipe` provides readable left-to-right composition without deep nesting:
+
+```typescript
+// Without pipe — reads inside-out
+const result = await collect(
+  chunks(
+    filter(
+      map(source, (x) => x * 2),
+      (x) => x > 5,
+    ),
+    10,
+  ),
+);
+
+// With pipe — reads top-to-bottom
+const result = await collect(
+  pipe(
+    source,
+    (s) => map(s, (x) => x * 2),
+    (s) => filter(s, (x) => x > 5),
+    (s) => chunks(s, 10),
+  ),
+);
+```
+
+```typescript
+function pipe<T>(source: AsyncIterable<T>, ...fns: StreamOp[]): AsyncIterable<any>
+```
+
+---
+
+## Transformation
+
+<AccordionGroup>
+  <Accordion title="map">
+
+  ```typescript
+  function map<T, U>(source: AsyncIterable<T>, fn: (item: T) => U): AsyncIterable<U>
+  ```
+
+  Applies `fn` to each item. The mapping is synchronous — use `andThen` for async mappings.
+
+  ```typescript
+  const doubled = map(numbers, (x) => x * 2);
+  ```
+
+  </Accordion>
+
+  <Accordion title="andThen">
+
+  ```typescript
+  function andThen<T, U>(source: AsyncIterable<T>, fn: (item: T) => Promise<U>): AsyncIterable<U>
+  ```
+
+  Async variant of `map`. Awaits each `fn(item)` before moving to the next item (sequential, not concurrent). Named `andThen` instead of `then` because `then` conflicts with JavaScript's Promise thenable protocol.
+
+  ```typescript
+  const texts = andThen(urls, (url) => fetch(url).then((r) => r.text()));
+  ```
+
+  </Accordion>
+
+  <Accordion title="filter">
+
+  ```typescript
+  function filter<T>(source: AsyncIterable<T>, fn: (item: T) => boolean): AsyncIterable<T>
+  ```
+
+  Yields only items for which `fn` returns `true`.
+
+  ```typescript
+  const evens = filter(numbers, (x) => x % 2 === 0);
+  ```
+
+  </Accordion>
+
+  <Accordion title="filterMap">
+
+  ```typescript
+  function filterMap<T, U>(
+    source: AsyncIterable<T>,
+    fn: (item: T) => U | null | undefined,
+  ): AsyncIterable<U>
+  ```
+
+  Combines `filter` and `map`. Items where `fn` returns `null` or `undefined` are dropped; all other values (including `0`, `""`, and `false`) are yielded.
+
+  ```typescript
+  const parsed = filterMap(lines, (line) => {
+    const n = parseInt(line);
+    return isNaN(n) ? null : n;
+  });
+  ```
+
+  </Accordion>
+
+  <Accordion title="enumerate">
+
+  ```typescript
+  function enumerate<T>(source: AsyncIterable<T>): AsyncIterable<[number, T]>
+  ```
+
+  Wraps each item in a `[index, value]` tuple. Indices start at `0`.
+
+  ```typescript
+  for await (const [i, item] of enumerate(source)) {
+    console.log(`Item ${i}:`, item);
+  }
+  ```
+
+  </Accordion>
+
+  <Accordion title="inspect">
+
+  ```typescript
+  function inspect<T>(source: AsyncIterable<T>, fn: (item: T) => void): AsyncIterable<T>
+  ```
+
+  Calls `fn` as a side effect for each item, then yields the item unchanged. Useful for logging without modifying the stream.
+
+  ```typescript
+  const logged = inspect(source, (x) => console.log("got:", x));
+  ```
+
+  </Accordion>
+
+  <Accordion title="scan">
+
+  ```typescript
+  function scan<T, U>(
+    source: AsyncIterable<T>,
+    init: U,
+    fn: (acc: U, item: T) => U,
+  ): AsyncIterable<U>
+  ```
+
+  Like `fold`, but yields the running accumulator after each item rather than returning a single final value.
+
+  ```typescript
+  // Running sum: yields 1, 3, 6, 10
+  const running = scan(fromArray([1, 2, 3, 4]), 0, (acc, x) => acc + x);
+  ```
+
+  </Accordion>
+
+  <Accordion title="flatMap">
+
+  ```typescript
+  function flatMap<T, U>(
+    source: AsyncIterable<T>,
+    fn: (item: T) => AsyncIterable<U>,
+  ): AsyncIterable<U>
+  ```
+
+  Maps each item to an inner async iterable and flattens the results sequentially.
+
+  ```typescript
+  const expanded = flatMap(ids, (id) => fetchRelated(id));
+  ```
+
+  </Accordion>
+
+  <Accordion title="flatten">
+
+  ```typescript
+  function flatten<T>(source: AsyncIterable<AsyncIterable<T>>): AsyncIterable<T>
+  ```
+
+  Flattens a stream of streams into a single stream, consuming each inner iterable fully before moving to the next.
+
+  ```typescript
+  const flat = flatten(streamOfStreams);
+  ```
+
+  </Accordion>
+
+  <Accordion title="mapWhile">
+
+  ```typescript
+  function mapWhile<T, U>(
+    source: AsyncIterable<T>,
+    fn: (item: T) => U | null | undefined,
+  ): AsyncIterable<U>
+  ```
+
+  Maps items through `fn` and stops (terminates the stream) as soon as `fn` returns `null` or `undefined`. Unlike `filterMap`, returning `null` ends the stream rather than skipping the item.
+
+  ```typescript
+  // Yields 2, 4, 6 — stops when x >= 4 returns null
+  const result = mapWhile(numbers, (x) => x < 4 ? x * 2 : null);
+  ```
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Flow control
+
+<AccordionGroup>
+  <Accordion title="take">
+
+  ```typescript
+  function take<T>(source: AsyncIterable<T>, n: number): AsyncIterable<T>
+  ```
+
+  Yields the first `n` items and then terminates the stream.
+
+  ```typescript
+  const first5 = take(source, 5);
+  ```
+
+  </Accordion>
+
+  <Accordion title="skip">
+
+  ```typescript
+  function skip<T>(source: AsyncIterable<T>, n: number): AsyncIterable<T>
+  ```
+
+  Skips the first `n` items and then yields the rest.
+
+  ```typescript
+  const rest = skip(source, 10);
+  ```
+
+  </Accordion>
+
+  <Accordion title="takeWhile">
+
+  ```typescript
+  function takeWhile<T>(source: AsyncIterable<T>, fn: (item: T) => boolean): AsyncIterable<T>
+  ```
+
+  Yields items while `fn` returns `true`. Stops permanently on the first `false`.
+
+  ```typescript
+  const ascending = takeWhile(numbers, (x) => x > 0);
+  ```
+
+  </Accordion>
+
+  <Accordion title="skipWhile">
+
+  ```typescript
+  function skipWhile<T>(source: AsyncIterable<T>, fn: (item: T) => boolean): AsyncIterable<T>
+  ```
+
+  Skips items while `fn` returns `true`. Once `fn` returns `false`, yields that item and all subsequent items without re-checking the predicate.
+
+  ```typescript
+  const tail = skipWhile(numbers, (x) => x < 100);
+  ```
+
+  </Accordion>
+
+  <Accordion title="takeUntil">
+
+  ```typescript
+  function takeUntil<T>(source: AsyncIterable<T>, signal: Promise<void>): AsyncIterable<T>
+  ```
+
+  Yields items until the `signal` promise resolves. Useful for time-bounded or externally-terminated iteration.
+
+  ```typescript
+  import { sleep } from "antiox/time";
+
+  // Collect items for up to 5 seconds
+  const results = await collect(takeUntil(liveStream, sleep(5000)));
+  ```
+
+  </Accordion>
+
+  <Accordion title="peekable">
+
+  ```typescript
+  function peekable<T>(source: AsyncIterable<T>): Peekable<T>
+  ```
+
+  Wraps a stream in a `Peekable` that allows looking at the next item without consuming it. `Peekable<T>` is itself async-iterable.
+
+  ```typescript
+  const p = peekable(source);
+  const first = await p.peek(); // does not advance the iterator
+  for await (const item of p) {
+    // first item is still yielded here
+  }
+  ```
+
+  **`Peekable<T>` API:**
+  - `peek(): Promise<T | undefined>` — returns the next value without consuming it. Returns `undefined` if the stream is exhausted.
+  - `[Symbol.asyncIterator]` — yields all items including the peeked one.
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Aggregation
+
+<AccordionGroup>
+  <Accordion title="collect">
+
+  ```typescript
+  function collect<T>(source: AsyncIterable<T>): Promise<T[]>
+  ```
+
+  Consumes the entire stream and returns all items as an array.
+
+  ```typescript
+  const all = await collect(source);
+  ```
+
+  </Accordion>
+
+  <Accordion title="fold">
+
+  ```typescript
+  function fold<T, U>(
+    source: AsyncIterable<T>,
+    init: U,
+    fn: (acc: U, item: T) => U,
+  ): Promise<U>
+  ```
+
+  Reduces the stream to a single value using an accumulator.
+
+  ```typescript
+  const sum = await fold(numbers, 0, (acc, x) => acc + x);
+  ```
+
+  </Accordion>
+
+  <Accordion title="count">
+
+  ```typescript
+  function count<T>(source: AsyncIterable<T>): Promise<number>
+  ```
+
+  Counts the total number of items in the stream.
+
+  ```typescript
+  const n = await count(source);
+  ```
+
+  </Accordion>
+
+  <Accordion title="any">
+
+  ```typescript
+  function any<T>(source: AsyncIterable<T>, fn: (item: T) => boolean): Promise<boolean>
+  ```
+
+  Returns `true` as soon as any item satisfies `fn`. Short-circuits and stops consuming the stream.
+
+  ```typescript
+  const hasError = await any(events, (e) => e.type === "error");
+  ```
+
+  </Accordion>
+
+  <Accordion title="all">
+
+  ```typescript
+  function all<T>(source: AsyncIterable<T>, fn: (item: T) => boolean): Promise<boolean>
+  ```
+
+  Returns `false` as soon as any item fails `fn`. Returns `true` for an empty stream. Short-circuits.
+
+  ```typescript
+  const allValid = await all(records, validate);
+  ```
+
+  </Accordion>
+
+  <Accordion title="forEach">
+
+  ```typescript
+  function forEach<T>(source: AsyncIterable<T>, fn: (item: T) => void): Promise<void>
+  ```
+
+  Calls `fn` for each item sequentially and resolves when the stream is exhausted.
+
+  ```typescript
+  await forEach(messages, (msg) => process(msg));
+  ```
+
+  </Accordion>
+
+  <Accordion title="forEachConcurrent">
+
+  ```typescript
+  function forEachConcurrent<T>(
+    source: AsyncIterable<T>,
+    limit: number,
+    fn: (item: T) => Promise<void>,
+  ): Promise<void>
+  ```
+
+  Calls `fn` on each item concurrently, up to `limit` concurrent calls at a time. Resolves when all calls have completed.
+
+  ```typescript
+  await forEachConcurrent(tasks, 4, async (task) => {
+    await processTask(task);
+  });
+  ```
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Combination
+
+<AccordionGroup>
+  <Accordion title="chain">
+
+  ```typescript
+  function chain<T>(...sources: AsyncIterable<T>[]): AsyncIterable<T>
+  ```
+
+  Concatenates streams in order — exhausts the first before yielding from the second.
+
+  ```typescript
+  const all = chain(pageOne, pageTwo, pageThree);
+  ```
+
+  </Accordion>
+
+  <Accordion title="zip">
+
+  ```typescript
+  function zip<T, U>(a: AsyncIterable<T>, b: AsyncIterable<U>): AsyncIterable<[T, U]>
+  ```
+
+  Pairs items from two streams element-by-element. Stops when either stream is exhausted.
+
+  ```typescript
+  const paired = zip(keys, values);
+  // yields [key1, val1], [key2, val2], ...
+  ```
+
+  </Accordion>
+
+  <Accordion title="merge">
+
+  ```typescript
+  function merge<T>(...sources: AsyncIterable<T>[]): AsyncIterable<T>
+  ```
+
+  Merges multiple streams into one, yielding items in arrival order. All sources are consumed concurrently.
+
+  ```typescript
+  for await (const item of merge(stream1, stream2, stream3)) {
+    console.log(item);
+  }
+  ```
+
+  The merged stream ends when all source streams are exhausted.
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Buffering
+
+<AccordionGroup>
+  <Accordion title="buffered">
+
+  ```typescript
+  function buffered<T>(
+    source: AsyncIterable<PromiseLike<T>>,
+    concurrency: number,
+  ): AsyncIterable<T>
+  ```
+
+  Runs up to `concurrency` promises concurrently, but yields results in the original source order. Use this when you need ordered output and can tolerate head-of-line blocking.
+
+  ```typescript
+  const results = await collect(
+    buffered(
+      map(urls, (url) => fetch(url).then((r) => r.json())),
+      5,
+    ),
+  );
+  ```
+
+  </Accordion>
+
+  <Accordion title="bufferUnordered">
+
+  ```typescript
+  function bufferUnordered<T>(
+    source: AsyncIterable<PromiseLike<T>>,
+    concurrency: number,
+  ): AsyncIterable<T>
+  ```
+
+  Runs up to `concurrency` promises concurrently and yields results as they complete, in any order. Use this for maximum throughput when order doesn't matter.
+
+  ```typescript
+  const results = await collect(
+    bufferUnordered(
+      map(urls, (url) => fetch(url)),
+      10,
+    ),
+  );
+  ```
+
+  </Accordion>
+
+  <Accordion title="chunks">
+
+  ```typescript
+  function chunks<T>(source: AsyncIterable<T>, size: number): AsyncIterable<T[]>
+  ```
+
+  Groups items into arrays of at most `size`. The final chunk may be smaller if the stream ends before filling.
+
+  ```typescript
+  // yields [1,2,3], [4,5,6], [7]
+  const batches = chunks(source, 3);
+  ```
+
+  </Accordion>
+
+  <Accordion title="chunksTimeout">
+
+  ```typescript
+  function chunksTimeout<T>(
+    source: AsyncIterable<T>,
+    maxSize: number,
+    ms: number,
+  ): AsyncIterable<T[]>
+  ```
+
+  Like `chunks`, but also flushes the current chunk if `ms` milliseconds elapse without filling it. Useful for batching high-frequency events with a latency ceiling.
+
+  ```typescript
+  // Flush when batch hits 100 items OR after 200ms, whichever comes first
+  const batches = chunksTimeout(events, 100, 200);
+  ```
+
+  </Accordion>
+
+  <Accordion title="throttle">
+
+  ```typescript
+  function throttle<T>(source: AsyncIterable<T>, ms: number): AsyncIterable<T>
+  ```
+
+  Ensures at least `ms` milliseconds between successive yields. The first item is yielded immediately.
+
+  ```typescript
+  // Emit at most one item per second
+  const throttled = throttle(source, 1000);
+  ```
+
+  </Accordion>
+
+  <Accordion title="timeout">
+
+  ```typescript
+  function timeout<T>(source: AsyncIterable<T>, ms: number): AsyncIterable<T>
+  ```
+
+  Wraps a stream so that if any individual item takes longer than `ms` milliseconds to arrive, a `TimeoutError` is thrown.
+
+  ```typescript
+  import { TimeoutError } from "antiox/time";
+
+  try {
+    for await (const item of timeout(source, 5000)) {
+      process(item);
+    }
+  } catch (e) {
+    if (e instanceof TimeoutError) {
+      console.log("stream stalled for >5s");
+    }
+  }
+  ```
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Examples
+
+### Concurrent HTTP fetching
+
+```typescript
+import { map, bufferUnordered, collect } from "antiox/stream";
+
+const urls = ["https://api.example.com/1", "https://api.example.com/2", ...];
+
+async function* urlStream() {
+  for (const url of urls) yield url;
+}
+
+const results = await collect(
+  bufferUnordered(
+    map(urlStream(), (url) => fetch(url).then((r) => r.json())),
+    10, // max 10 in-flight at once
+  ),
+);
+```
+
+### Using `pipe` for readable composition
+
+```typescript
+import { filter, map, chunks, pipe, collect } from "antiox/stream";
+
+const processed = pipe(
+  source,
+  (s) => filter(s, (x) => x > 0),
+  (s) => map(s, (x) => x * 2),
+  (s) => chunks(s, 10),
+);
+
+for await (const batch of processed) {
+  await saveBatch(batch);
+}
+```
+
+### Merging concurrent streams
+
+```typescript
+import { merge } from "antiox/stream";
+
+const stream1 = subscribeToTopic("orders");
+const stream2 = subscribeToTopic("cancellations");
+const stream3 = subscribeToTopic("refunds");
+
+for await (const event of merge(stream1, stream2, stream3)) {
+  console.log(event);
+}
+```
+
+---
+
+## Not implemented
+
+The following Rust APIs are not implemented. See [COMPATIBILITY.md](https://github.com/rivet-dev/antiox/blob/main/COMPATIBILITY.md) for full details.
+
+| Rust | Reason |
+|---|---|
+| `fuse()` | N/A — JS async iterators are already fused by spec. |
+| `cycle()` | Not implemented — dangerous with consumed async iterators. |
+| `unzip()` | Not yet implemented. |
+| `ready_chunks()` | N/A — relies on poll-based readiness model. |
+| `flatten_unordered()` / `flat_map_unordered()` | Not yet implemented. |
+| `StreamMap` | Not yet implemented. |

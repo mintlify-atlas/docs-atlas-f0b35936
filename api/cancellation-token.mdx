@@ -1,0 +1,141 @@
+---
+title: CancellationToken
+description: Tree-structured cancellation that propagates from parent tokens to all children.
+---
+
+`CancellationToken` provides cooperative cancellation. A token can be cancelled at any time; tasks holding the token (or a child of it) can observe the cancellation and exit gracefully. Tokens form a tree: cancelling a parent automatically cancels all its descendants.
+
+**Rust equivalent:** [`tokio_util::sync::CancellationToken`](https://docs.rs/tokio-util/latest/tokio_util/sync/struct.CancellationToken.html)
+
+## Import
+
+```typescript
+import { CancellationToken } from "antiox/sync/cancellation_token";
+```
+
+## Usage
+
+```typescript
+import { CancellationToken } from "antiox/sync/cancellation_token";
+import { spawn } from "antiox/task";
+
+const token = new CancellationToken();
+const child = token.child();
+
+spawn(async () => {
+  await child.cancelled();
+  console.log("Child was cancelled");
+});
+
+// Cancelling the parent also cancels child
+token.cancel();
+```
+
+## `CancellationToken`
+
+### Constructor
+
+```typescript
+const token = new CancellationToken();
+```
+
+Creates a new, uncancelled token. No constructor arguments.
+
+### Methods
+
+<ParamField path="cancel" type="() => void">
+  Cancels this token and recursively cancels all child tokens. Idempotent — calling `cancel()` on an already-cancelled token is a no-op. All tasks awaiting `cancelled()` on this token or any of its children are woken.
+</ParamField>
+
+<ParamField path="isCancelled" type="() => boolean">
+  Returns `true` if this token has been cancelled (directly or via a parent).
+
+  ```typescript
+  if (token.isCancelled()) {
+    return; // bail out early
+  }
+  ```
+</ParamField>
+
+<ParamField path="cancelled" type="() => Promise<void>">
+  Returns a promise that resolves when this token is cancelled. If the token is already cancelled, resolves immediately.
+
+  ```typescript
+  spawn(async () => {
+    await token.cancelled();
+    console.log("Shutting down");
+    await cleanup();
+  });
+  ```
+</ParamField>
+
+<ParamField path="child" type="() => CancellationToken">
+  Creates and returns a new child token. The child is cancelled whenever the parent is cancelled. The child can also be cancelled independently without affecting the parent or siblings.
+
+  ```typescript
+  const parent = new CancellationToken();
+  const childA = parent.child();
+  const childB = parent.child();
+
+  childA.cancel();    // only childA is cancelled
+  parent.cancel();    // cancels parent, childA (already cancelled), and childB
+  ```
+</ParamField>
+
+<ParamField path="Symbol.dispose" type="() => void">
+  Calls `cancel()` and detaches this token from its parent. Enables the `using` keyword.
+
+  ```typescript
+  {
+    using token = new CancellationToken();
+    await doWork();
+  } // token.cancel() called automatically
+  ```
+</ParamField>
+
+## Tree-structured cancellation
+
+Tokens compose into a tree. Cancelling any node cancels all nodes in its subtree.
+
+```typescript
+import { CancellationToken } from "antiox/sync/cancellation_token";
+import { spawn } from "antiox/task";
+
+const root = new CancellationToken();
+
+// Scope a subtree to a logical operation
+async function runPipeline(parent: CancellationToken) {
+  const scope = parent.child();
+
+  const fetcher = scope.child();
+  const processor = scope.child();
+
+  spawn(async () => {
+    await fetcher.cancelled();
+    console.log("Fetcher stopped");
+  });
+
+  spawn(async () => {
+    await processor.cancelled();
+    console.log("Processor stopped");
+  });
+
+  // Cancel just this pipeline without touching the root
+  scope.cancel();
+}
+
+await runPipeline(root);
+
+// Cancelling root would also cancel any remaining child scopes
+root.cancel();
+```
+
+<Tip>
+  Pass child tokens into subtasks rather than the root token. This lets you cancel a subsystem without affecting sibling subsystems.
+</Tip>
+
+## Related
+
+- [DropGuard](/api/drop-guard) — run cleanup when a scope exits
+- [Task](/api/task) — `spawn()` accepts `AbortSignal` for cooperative cancellation
+- [Select](/api/select) — race branches and cancel losers via `AbortSignal`

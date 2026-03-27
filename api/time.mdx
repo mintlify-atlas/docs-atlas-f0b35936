@@ -1,0 +1,162 @@
+---
+title: 'time'
+description: 'Timer primitives with AbortSignal integration. TypeScript equivalent of tokio::time.'
+keywords: ['time', 'sleep', 'timeout', 'interval', 'TimeoutError', 'timer', 'delay']
+---
+
+Module: `antiox/time` — Rust equivalent: [`tokio::time`](https://docs.rs/tokio/latest/tokio/time/)
+
+Timer primitives with `AbortSignal` integration. All functions are lightweight wrappers around native `setTimeout`.
+
+```typescript
+import { sleep, timeout, timeoutAt, interval, TimeoutError } from "antiox/time";
+```
+
+---
+
+## `sleep`
+
+```typescript
+function sleep(ms: number, signal?: AbortSignal): Promise<void>
+```
+
+Resolves after `ms` milliseconds. If a `signal` is provided and already aborted, the promise rejects immediately. If the signal fires during the sleep, the timer is cleared and the promise rejects with the signal's abort reason.
+
+```typescript
+await sleep(1000); // wait one second
+```
+
+With `AbortSignal` integration (useful inside tasks):
+
+```typescript
+const handle = spawn(async (signal) => {
+  await sleep(5000, signal); // cancelled early if handle.abort() is called
+  return "done";
+});
+```
+
+<Tip>
+  Pass the task's `AbortSignal` to `sleep` so it wakes up immediately when the task is cancelled rather than blocking until the timer fires.
+</Tip>
+
+---
+
+## `timeout`
+
+```typescript
+function timeout<T>(ms: number, promise: Promise<T>): Promise<T>
+```
+
+Races `promise` against a `ms`-millisecond deadline. If the promise resolves first, its value is returned. If the deadline fires first, throws `TimeoutError`.
+
+```typescript
+try {
+  const data = await timeout(5000, fetchData());
+  console.log(data);
+} catch (e) {
+  if (e instanceof TimeoutError) {
+    console.log("timed out after 5s");
+  }
+}
+```
+
+<Note>
+  The underlying promise is not cancelled when the timeout fires — it continues running in the background. If you need cooperative cancellation, wrap your work in a `spawn` and pass the signal to abort-aware APIs.
+</Note>
+
+---
+
+## `timeoutAt`
+
+```typescript
+function timeoutAt<T>(deadline: Date | number, promise: Promise<T>): Promise<T>
+```
+
+Like `timeout`, but accepts an absolute deadline as a `Date` object or a Unix timestamp in milliseconds (e.g., `Date.now() + 5000`). If the deadline is already in the past, the promise is raced against a zero-duration timeout.
+
+```typescript
+const deadline = Date.now() + 10_000; // 10 seconds from now
+
+try {
+  const result = await timeoutAt(deadline, longRunningOperation());
+} catch (e) {
+  if (e instanceof TimeoutError) {
+    console.log("deadline exceeded");
+  }
+}
+```
+
+---
+
+## `interval`
+
+```typescript
+function interval(ms: number): AsyncIterable<number>
+```
+
+Returns an async iterable that yields a monotonically increasing tick count: `0, 1, 2, ...`. The first tick (`0`) is yielded immediately (no delay). Subsequent ticks are separated by `ms` milliseconds.
+
+```typescript
+for await (const tick of interval(1000)) {
+  console.log(`Tick ${tick}`);
+  if (tick >= 4) break;
+}
+// Tick 0  (immediately)
+// Tick 1  (after 1s)
+// Tick 2  (after 2s)
+// Tick 3  (after 3s)
+// Tick 4  (after 4s)
+```
+
+<Warning>
+  `interval` produces values indefinitely. Always `break` or `return` from the loop, or use a combinator like [`take`](/api/stream) to limit iterations.
+</Warning>
+
+Combined with `take` from `antiox/stream`:
+
+```typescript
+import { take, collect } from "antiox/stream";
+import { interval } from "antiox/time";
+
+const ticks = await collect(take(interval(500), 5));
+// [0, 1, 2, 3, 4]
+```
+
+---
+
+## `TimeoutError`
+
+Thrown by `timeout` and `timeoutAt` when the deadline fires before the promise resolves.
+
+```typescript
+class TimeoutError extends Error {}
+```
+
+| Property | Value |
+|---|---|
+| `name` | `"TimeoutError"` |
+| `message` | `"Operation timed out"` |
+
+```typescript
+try {
+  await timeout(1000, neverResolves());
+} catch (e) {
+  console.log(e instanceof TimeoutError); // true
+  console.log(e.name);                    // "TimeoutError"
+  console.log(e.message);                 // "Operation timed out"
+}
+```
+
+---
+
+## Not implemented
+
+The following Tokio APIs are not implemented. See [COMPATIBILITY.md](https://github.com/rivet-dev/antiox/blob/main/COMPATIBILITY.md) for full details.
+
+| Rust | Reason |
+|---|---|
+| `Instant` | N/A — use `Date.now()` or `performance.now()`. |
+| `sleep_until()` | Not implemented — use `sleep()` with a calculated duration or `timeoutAt()`. |
+| `interval_at()` | Not yet implemented. |
+| `MissedTickBehavior` | Not yet implemented. |
+| `advance()` / `pause()` / `resume()` | N/A — use `vi.useFakeTimers()` in tests instead. |

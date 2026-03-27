@@ -1,0 +1,93 @@
+---
+title: Notify
+description: Lightweight notification primitive for waking one or all waiting tasks.
+---
+
+`Notify` is the simplest synchronization primitive: one task waits for a notification, another sends it. Unlike channels, `Notify` carries no data. It is useful for signaling that some condition has become true.
+
+**Rust equivalent:** [`tokio::sync::Notify`](https://docs.rs/tokio/latest/tokio/sync/struct.Notify.html)
+
+## Import
+
+```typescript
+import { Notify } from "antiox/sync/notify";
+```
+
+## Usage
+
+```typescript
+import { Notify } from "antiox/sync/notify";
+import { spawn } from "antiox/task";
+
+const notify = new Notify();
+
+// Waiter task
+spawn(async () => {
+  await notify.notified();
+  console.log("Received notification");
+});
+
+// Notifier task
+notify.notifyOne();
+```
+
+## `Notify`
+
+### Constructor
+
+```typescript
+const notify = new Notify();
+```
+
+Creates a new `Notify`. No constructor arguments.
+
+### Methods
+
+<ParamField path="notified" type="() => Promise<void>">
+  Waits until `notifyOne()` or `notifyWaiters()` is called. If a permit was stored by a prior `notifyOne()` call with no waiters, `notified()` consumes it and resolves immediately.
+
+  ```typescript
+  await notify.notified();
+  console.log("Go!");
+  ```
+</ParamField>
+
+<ParamField path="notifyOne" type="() => void">
+  Wakes one waiting task. If no tasks are currently waiting, stores a permit so the next call to `notified()` resolves immediately. Only one permit is stored regardless of how many times `notifyOne()` is called with no waiters.
+
+  ```typescript
+  // Safe to call even before notified() is awaited
+  notify.notifyOne();
+  ```
+</ParamField>
+
+<ParamField path="notifyWaiters" type="() => void">
+  Wakes all currently waiting tasks simultaneously. Does not store a permit — tasks that call `notified()` after this point will still suspend.
+
+  ```typescript
+  // Wake every task waiting on this notify
+  notify.notifyWaiters();
+  ```
+</ParamField>
+
+<ParamField path="Symbol.dispose" type="() => void">
+  Calls `notifyWaiters()`, releasing all pending waiters. Enables the `using` keyword for cleanup.
+</ParamField>
+
+## `notifyOne` vs `notifyWaiters`
+
+| | `notifyOne()` | `notifyWaiters()` |
+|---|---|---|
+| Wakes | One waiter | All current waiters |
+| Stores permit | Yes (if no waiters) | No |
+| Next `notified()` | Consumes stored permit | Suspends as normal |
+
+<Note>
+  `notifyOne()` is appropriate when exactly one task should proceed — for example, waking a single consumer. Use `notifyWaiters()` when all waiting tasks should react to the same event, such as a configuration reload.
+</Note>
+
+## Related
+
+- [Barrier](/api/barrier) — release a fixed number of tasks simultaneously
+- [CancellationToken](/api/cancellation-token) — signal cancellation across a tree of tasks
+- [Watch channel](/api/watch) — broadcast a value change to all subscribers

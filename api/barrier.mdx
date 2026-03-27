@@ -1,0 +1,93 @@
+---
+title: Barrier
+description: Synchronization point that holds all waiting tasks until the Nth task arrives.
+---
+
+A `Barrier` lets N tasks synchronize at a common point. Each task calls `wait()` and suspends until all N tasks have called it. When the last task arrives, all N are released simultaneously. The barrier then resets automatically for the next group (reusable).
+
+**Rust equivalent:** [`tokio::sync::Barrier`](https://docs.rs/tokio/latest/tokio/sync/struct.Barrier.html)
+
+## Import
+
+```typescript
+import { Barrier, BarrierWaitResult } from "antiox/sync/barrier";
+```
+
+## Usage
+
+```typescript
+import { Barrier } from "antiox/sync/barrier";
+import { spawn } from "antiox/task";
+
+const barrier = new Barrier(3);
+
+for (let i = 0; i < 3; i++) {
+  spawn(async () => {
+    console.log(`Task ${i} reached barrier`);
+    const result = await barrier.wait();
+    if (result.isLeader()) {
+      console.log("I'm the leader — all tasks are ready");
+    }
+    console.log(`Task ${i} continuing`);
+  });
+}
+```
+
+## `Barrier`
+
+### Constructor
+
+<ParamField path="constructor" type="new Barrier(n: number)">
+  Creates a barrier that releases all waiters when `n` tasks have called `wait()`. Throws `RangeError` if `n < 1`.
+</ParamField>
+
+### Methods
+
+<ParamField path="wait" type="() => Promise<BarrierWaitResult>">
+  Suspends the caller until all N tasks have called `wait()`. The last task to arrive is designated the leader and resolves immediately with `isLeader() === true`. All other tasks resolve with `isLeader() === false`.
+
+  After all N tasks are released, the barrier resets to its initial state for the next generation.
+
+  ```typescript
+  const result = await barrier.wait();
+  if (result.isLeader()) {
+    // Only one task per generation reaches this branch
+    await writeCheckpoint();
+  }
+  ```
+</ParamField>
+
+## `BarrierWaitResult`
+
+Returned by `wait()` for each task.
+
+<ParamField path="isLeader" type="() => boolean">
+  Returns `true` for exactly one task per generation — the task that called `wait()` last. Useful for electing one task to perform a shared action (such as writing a checkpoint or logging progress) without external coordination.
+</ParamField>
+
+<Tip>
+  The leader role is assigned to the last arrival, not a fixed task. Do not assume the same task is always the leader across generations.
+</Tip>
+
+## Reuse across generations
+
+The barrier resets automatically after each generation. You can call `wait()` in a loop:
+
+```typescript
+const barrier = new Barrier(workers.length);
+
+for (const chunk of chunks) {
+  await Promise.all(workers.map(async (w) => {
+    await w.process(chunk);
+    const result = await barrier.wait();
+    if (result.isLeader()) {
+      await flushResults();
+    }
+  }));
+}
+```
+
+## Related
+
+- [Notify](/api/notify) — wake one or all waiters on demand
+- [Semaphore](/api/semaphore) — limit concurrency to N permits at a time

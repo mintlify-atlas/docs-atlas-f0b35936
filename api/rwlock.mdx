@@ -1,0 +1,116 @@
+---
+title: RwLock
+description: Reader-writer lock allowing multiple concurrent readers or one exclusive writer.
+---
+
+`RwLock` allows any number of tasks to read the protected value simultaneously, but only one task may write at a time. While a writer holds the lock, all readers and other writers suspend until it is released.
+
+**Rust equivalent:** [`tokio::sync::RwLock`](https://docs.rs/tokio/latest/tokio/sync/struct.RwLock.html)
+
+## Import
+
+```typescript
+import { RwLock, RwLockReadGuard, RwLockWriteGuard } from "antiox/sync/rwlock";
+```
+
+## Usage
+
+```typescript
+import { RwLock } from "antiox/sync/rwlock";
+
+const lock = new RwLock({ data: "hello" });
+
+// Concurrent reads
+const reader = await lock.read();
+console.log(reader.value);
+reader.release();
+
+// Exclusive write
+const writer = await lock.write();
+writer.value = { data: "world" };
+writer.release();
+```
+
+## `RwLock<T>`
+
+### Constructor
+
+<ParamField path="constructor" type="new RwLock<T>(value: T)">
+  Creates a new reader-writer lock wrapping `value`.
+</ParamField>
+
+### Methods
+
+<ParamField path="read" type="() => Promise<RwLockReadGuard<T>>">
+  Acquires a read lock. Multiple callers may hold read locks simultaneously. Suspends if a writer is active or waiting. Returns an `RwLockReadGuard` with read-only access to the value.
+</ParamField>
+
+<ParamField path="write" type="() => Promise<RwLockWriteGuard<T>>">
+  Acquires an exclusive write lock. Suspends if any reader or writer is active. Returns an `RwLockWriteGuard` with read-write access to the value.
+</ParamField>
+
+<ParamField path="tryRead" type="() => RwLockReadGuard<T>">
+  Attempts to acquire a read lock without waiting. Throws if a writer is active or waiting.
+
+  ```typescript
+  try {
+    const guard = lock.tryRead();
+    console.log(guard.value);
+    guard.release();
+  } catch {
+    console.log("Lock is unavailable");
+  }
+  ```
+</ParamField>
+
+<ParamField path="tryWrite" type="() => RwLockWriteGuard<T>">
+  Attempts to acquire a write lock without waiting. Throws if any reader or writer is active.
+</ParamField>
+
+## `RwLockReadGuard<T>`
+
+Returned by `read()` and `tryRead()`. Provides read-only access to the protected value.
+
+<ParamField path="value" type="T" required>
+  Read-only access to the protected value. Throws if the guard has already been released.
+</ParamField>
+
+<ParamField path="release" type="() => void">
+  Releases the read lock. When the last active reader releases, any waiting writer is woken. Calling `release()` more than once is safe.
+</ParamField>
+
+<ParamField path="Symbol.dispose" type="() => void">
+  Calls `release()`. Enables the `using` keyword.
+
+  ```typescript
+  {
+    using reader = await lock.read();
+    console.log(reader.value);
+  } // released automatically
+  ```
+</ParamField>
+
+## `RwLockWriteGuard<T>`
+
+Returned by `write()` and `tryWrite()`. Provides exclusive read-write access to the protected value.
+
+<ParamField path="value" type="T">
+  Get or set the protected value. Throws if the guard has already been released.
+</ParamField>
+
+<ParamField path="release" type="() => void">
+  Releases the write lock. Wakes waiting writers first (writer preference); if none are waiting, all pending readers are woken. Calling `release()` more than once is safe.
+</ParamField>
+
+<ParamField path="Symbol.dispose" type="() => void">
+  Calls `release()`. Enables the `using` keyword.
+</ParamField>
+
+<Note>
+  `RwLock` uses writer-preference fairness: new readers suspend when a writer is waiting, preventing writer starvation. If you only need exclusive access, use [Mutex](/api/mutex) instead.
+</Note>
+
+## Related
+
+- [Mutex](/api/mutex) — exclusive-only lock, simpler when reads need no sharing
+- [Semaphore](/api/semaphore) — limit concurrency to N tasks at a time

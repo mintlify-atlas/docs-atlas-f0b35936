@@ -1,0 +1,55 @@
+---
+title: "Introduction"
+description: "Zero-dependency TypeScript library with Rust and Tokio-like async primitives."
+---
+
+<Note>
+  **Pre-release:** Antiox is used in production but the API is subject to change.
+</Note>
+
+Antiox is a zero-dependency TypeScript library that brings Rust and Tokio-style concurrency primitives to JavaScript. It gives you channels, streams, tasks, timers, and synchronization utilities — everything you need for structured concurrency and backpressure — without callbacks, event emitters, or custom DSLs.
+
+## Design philosophy
+
+Antiox is intentionally narrow in scope:
+
+- **No wrapper types.** Antiox does not implement `Result`, `Option`, or `match`. TypeScript's `T | null`, union types, and `switch` already cover these at zero cost.
+- **No custom DSL.** Everything uses plain `async`/`await`, `AbortSignal`, and `AsyncIterator`.
+- **Rust-shaped.** Control flow and concurrency patterns map directly onto their Tokio equivalents. The same structure, naming, and semantics work across both codebases.
+- **Tree-shakeable.** Every module is a separate subpath export. You only ship what you import.
+- **Lightweight enough to be a transitive dependency.** No runtime overhead, no bundled framework.
+
+## Available modules
+
+| Module | Rust equivalent | Description |
+|--------|-----------------|-------------|
+| `antiox/sync/mpsc` | `tokio::sync::mpsc` | Multi-producer, single-consumer channel with backpressure |
+| `antiox/sync/oneshot` | `tokio::sync::oneshot` | Single-use channel for typed request-response |
+| `antiox/sync/broadcast` | `tokio::sync::broadcast` | Multi-producer, multi-consumer bounded channel |
+| `antiox/sync/watch` | `tokio::sync::watch` | Single-value broadcast for observing state changes |
+| `antiox/sync/mutex` | `tokio::sync::Mutex` | Async mutex for exclusive access across await points |
+| `antiox/sync/rwlock` | `tokio::sync::RwLock` | Multiple concurrent readers or one exclusive writer |
+| `antiox/sync/semaphore` | `tokio::sync::Semaphore` | Counting semaphore for limiting concurrency |
+| `antiox/sync/barrier` | `tokio::sync::Barrier` | N tasks wait until all arrive, then all proceed |
+| `antiox/sync/notify` | `tokio::sync::Notify` | Wake one or all waiters |
+| `antiox/sync/once_cell` | `tokio::sync::OnceCell` | Async lazy initialization, computed once and shared |
+| `antiox/sync/cancellation_token` | `tokio_util::sync::CancellationToken` | Tree-structured cancellation that propagates to children |
+| `antiox/sync/drop_guard` | `tokio_util::sync::DropGuard` | Ensure cleanup runs on dispose |
+| `antiox/sync/select` | `tokio::select!` | Race multiple async branches and cancel losers |
+| `antiox/task` | `tokio::task` | Task spawning with cooperative cancellation via `AbortSignal` |
+| `antiox/time` | `tokio::time` | Sleep, timeout, and interval with `AbortSignal` integration |
+| `antiox/stream` | `tokio_stream` / `futures::stream` | Async stream combinators over `AsyncIterable<T>` |
+| `antiox/collections/deque` | `std::collections::VecDeque` | Double-ended queue with O(1) push/pop from both ends |
+| `antiox/collections/binary_heap` | `std::collections::BinaryHeap` | Max-heap priority queue with O(log n) push/pop |
+| `antiox/panic` | `std::panic!`, `std::todo!`, `std::unreachable!` | Diverging functions and exhaustive type checking |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build a typed counter actor with channels and oneshot in minutes.
+  </Card>
+  <Card title="API reference" icon="book" href="/api/mpsc">
+    Detailed reference for every module and export.
+  </Card>
+</CardGroup>

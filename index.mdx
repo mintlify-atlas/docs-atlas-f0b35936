@@ -1,97 +1,90 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Antiox"
+description: "Rust- and Tokio-like async primitives for TypeScript. Zero dependencies, zero overhead."
 ---
 
-## Setting up
+Antiox brings the concurrency model you love from Rust to TypeScript. Channels, streams, tasks, and synchronization primitives — all mapped onto native JavaScript async/await without wrapper types, custom DSLs, or runtime overhead.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Add antiox to your project in seconds
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build a typed actor with channels in minutes
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Concepts" icon="lightbulb" href="/concepts/channels-and-backpressure">
+    Understand channels, backpressure, and structured concurrency
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/mpsc">
+    Full reference for every module and export
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Why Antiox?
 
-Everything you need to create world-class documentation.
+Antiox exists for a specific niche: TypeScript codebases that want Rust-shaped concurrency without the weight of a full effect system.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={2}>
+  <Card title="Channels & backpressure" icon="arrows-left-right">
+    Bounded MPSC, oneshot, broadcast, and watch channels with clean shutdown via `for await` iteration
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Async streams" icon="wave-sine">
+    Composable stream combinators on native `AsyncIterable&lt;T&gt;` — no wrapper objects
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Task management" icon="list-check">
+    Spawn tasks with `AbortSignal` cancellation, manage groups with `JoinSet`
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Sync primitives" icon="lock">
+    Mutex, RwLock, Semaphore, Barrier, Notify — everything you need to coordinate async tasks
   </Card>
-</Columns>
+  <Card title="Zero dependencies" icon="feather">
+    No transitive bloat. Every module is tree-shakeable and tiny enough to ship inside a library
+  </Card>
+  <Card title="Rust-shaped API" icon="gear">
+    Same naming and semantics as Tokio — your TypeScript reads like the Rust it was ported from
+  </Card>
+</CardGroup>
 
-## Need inspiration?
+## Getting started
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Install the package">
+    ```bash
+    npm install antiox
+    ```
+  </Step>
+  <Step title="Import the modules you need">
+    Each primitive lives in its own subpath — import only what you use:
+    ```typescript
+    import { channel } from "antiox/sync/mpsc";
+    import { spawn } from "antiox/task";
+    import { sleep } from "antiox/time";
+    ```
+  </Step>
+  <Step title="Build your first actor">
+    Use a bounded channel and `for await` to process messages with backpressure:
+    ```typescript
+    import { channel } from "antiox/sync/mpsc";
+    import { spawn } from "antiox/task";
+
+    const [tx, rx] = channel<string>(32);
+
+    spawn(async () => {
+      for await (const msg of rx) {
+        console.log("received:", msg);
+      }
+    });
+
+    await tx.send("hello");
+    await tx.send("world");
+    tx.close();
+    ```
+  </Step>
+  <Step title="Explore the full API">
+    Browse the [API Reference](/api/mpsc) for every module, or read the [Concepts](/concepts/channels-and-backpressure) to understand the design.
+  </Step>
+</Steps>
+
+<Note>
+  Antiox is pre-release. The library is used in production, but the API is subject to change before 1.0.
+</Note>

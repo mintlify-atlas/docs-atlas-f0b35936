@@ -1,0 +1,345 @@
+---
+title: 'mpsc'
+description: 'Multi-producer, single-consumer channels with backpressure and disconnection detection. Mirrors tokio::sync::mpsc.'
+---
+
+## Import
+
+```typescript
+import { channel, unboundedChannel } from 'antiox/sync/mpsc';
+```
+
+## Rust equivalent
+
+[`tokio::sync::mpsc`](https://docs.rs/tokio/latest/tokio/sync/mpsc/)
+
+## Overview
+
+The mpsc module provides multi-producer, single-consumer channels. Bounded channels apply backpressure by suspending senders when the buffer is full. Unbounded channels accept values synchronously without blocking, at the cost of unbounded memory growth.
+
+When all senders are dropped (or `close()` is called on each), the receiver's `recv()` drains remaining buffered messages then returns `null`. When the receiver is closed, all pending and future sends reject with `SendError`.
+
+## Usage example
+
+```typescript
+import { channel, unboundedChannel } from 'antiox/sync/mpsc';
+
+// Bounded channel with backpressure
+const [tx, rx] = channel<string>(32);
+
+await tx.send('hello');
+const msg = await rx.recv(); // 'hello'
+
+// Clone senders for multi-producer
+const tx2 = tx.clone();
+await tx2.send('from tx2');
+
+// Async iteration — terminates when all senders are closed
+for await (const msg of rx) {
+  console.log(msg);
+}
+
+// Unbounded channel (send is synchronous, never blocks)
+const [utx, urx] = unboundedChannel<number>();
+utx.send(42); // sync, never blocks
+```
+
+### Actor pattern with oneshot request-response
+
+```typescript
+import { channel } from 'antiox/sync/mpsc';
+import { oneshot, OneshotSender } from 'antiox/sync/oneshot';
+import { unreachable } from 'antiox/panic';
+import { spawn } from 'antiox/task';
+
+type Msg =
+  | { type: 'increment'; amount: number }
+  | { type: 'get'; resTx: OneshotSender<number> };
+
+const [tx, rx] = channel<Msg>(32);
+
+spawn(async () => {
+  let count = 0;
+  for await (const msg of rx) {
+    switch (msg.type) {
+      case 'increment':
+        count += msg.amount;
+        break;
+      case 'get':
+        msg.resTx.send(count);
+        break;
+      default:
+        unreachable(msg);
+    }
+  }
+});
+
+await tx.send({ type: 'increment', amount: 5 });
+
+const [resTx, resRx] = oneshot<number>();
+await tx.send({ type: 'get', resTx });
+const value = await resRx;
+```
+
+---
+
+## Functions
+
+### `channel`
+
+```typescript
+function channel<T>(capacity: number): [Sender<T>, Receiver<T>]
+```
+
+Creates a bounded mpsc channel. The channel buffers up to `capacity` messages. Senders that call `send()` when the buffer is full will suspend until space is available.
+
+<ParamField path="capacity" type="number" required>
+  Maximum number of messages to buffer. Must be at least 1. Throws `RangeError` if less than 1.
+</ParamField>
+
+**Returns** a `[Sender<T>, Receiver<T>]` tuple.
+
+### `unboundedChannel`
+
+```typescript
+function unboundedChannel<T>(): [UnboundedSender<T>, UnboundedReceiver<T>]
+```
+
+Creates an unbounded mpsc channel. `UnboundedSender.send()` is synchronous and never suspends. Use bounded channels when you need backpressure.
+
+**Returns** an `[UnboundedSender<T>, UnboundedReceiver<T>]` tuple.
+
+---
+
+## `Sender<T>`
+
+The sending half of a bounded channel. Multiple senders can share a channel via `clone()`. Implements `Symbol.dispose`.
+
+### `send`
+
+```typescript
+send(value: T): Promise<void>
+```
+
+Sends a value. Resolves immediately if there is buffer space or a waiting receiver. Suspends if the buffer is full and resumes when the receiver calls `recv()`. Throws `SendError` if the channel is closed or the sender has been dropped.
+
+<ParamField path="value" type="T" required>
+  The value to send.
+</ParamField>
+
+**Throws** `SendError<T>` — the unsent value is preserved in `error.value`.
+
+### `trySend`
+
+```typescript
+trySend(value: T): void
+```
+
+Attempts to send a value without suspending. Throws immediately if the buffer is full or the channel is closed.
+
+<ParamField path="value" type="T" required>
+  The value to send.
+</ParamField>
+
+**Throws** `TrySendError<T>` with `kind: 'full'` when the buffer is at capacity, or `kind: 'closed'` when the channel is closed. The unsent value is preserved in `error.value`.
+
+### `isClosed`
+
+```typescript
+isClosed(): boolean
+```
+
+Returns `true` if the receiver has been closed. Does not suspend.
+
+### `closed`
+
+```typescript
+closed(): Promise<void>
+```
+
+Resolves when the receiver closes the channel. Resolves immediately if the channel is already closed.
+
+### `reserve`
+
+```typescript
+reserve(): Promise<OwnedPermit<T>>
+```
+
+Waits for a slot in the buffer and returns an `OwnedPermit` that guarantees the slot is held. Useful when you need to separate the reservation from the send. Throws `SendError` if the sender is dropped or the channel is closed.
+
+**Returns** `Promise<OwnedPermit<T>>`
+
+### `capacity`
+
+```typescript
+capacity(): number
+```
+
+Returns the number of currently available slots in the buffer (total capacity minus buffered messages).
+
+### `clone`
+
+```typescript
+clone(): Sender<T>
+```
+
+Creates a new `Sender` that shares the same underlying channel. The channel stays open until all clones are closed. Throws if called on a dropped sender.
+
+### `close`
+
+```typescript
+close(): void
+```
+
+Drops this sender. Idempotent. When the last sender is closed and the buffer is empty, the receiver's `recv()` returns `null`.
+
+---
+
+## `OwnedPermit<T>`
+
+A reserved send slot obtained from `Sender.reserve()`. Guarantees that one message can be sent without blocking. Implements `Symbol.dispose`.
+
+### `send`
+
+```typescript
+send(value: T): void
+```
+
+Sends a value using the reserved slot. Can only be called once. Throws if the permit has already been used or the channel closed in the interim.
+
+<ParamField path="value" type="T" required>
+  The value to send.
+</ParamField>
+
+**Throws** `Error` if the permit is already used. **Throws** `SendError` if the channel closed after the reservation.
+
+### `release` / `Symbol.dispose`
+
+```typescript
+[Symbol.dispose](): void
+```
+
+Releases the permit without sending. Safe to call multiple times.
+
+---
+
+## `Receiver<T>`
+
+The receiving half of a bounded channel. Only one receiver exists per channel. Implements `Symbol.asyncIterator` and `Symbol.dispose`.
+
+### `recv`
+
+```typescript
+recv(): Promise<T | null>
+```
+
+Receives the next message. Returns `null` when all senders have been closed and the buffer is empty. Suspends if the buffer is empty and senders are still alive.
+
+### `tryRecv`
+
+```typescript
+tryRecv(): T
+```
+
+Attempts to receive a message without suspending.
+
+**Throws** `TryRecvError` with `kind: 'empty'` if no message is available, or `kind: 'disconnected'` if all senders are gone and the buffer is empty.
+
+### `close`
+
+```typescript
+close(): void
+```
+
+Closes the channel. Idempotent. Rejects all pending and future `send()` calls with `SendError`. Any messages already in the buffer can still be drained via `recv()` or `tryRecv()`.
+
+### `Symbol.asyncIterator`
+
+```typescript
+[Symbol.asyncIterator](): AsyncIterableIterator<T>
+```
+
+Yields messages one at a time. The iteration ends cleanly (without throwing) when all senders close and the buffer is drained.
+
+```typescript
+for await (const msg of rx) {
+  // handle msg
+}
+// loop exits when all senders close
+```
+
+---
+
+## `UnboundedSender<T>`
+
+The sending half of an unbounded channel. Same API as `Sender<T>` minus `capacity()` and `reserve()` (not applicable to unbounded channels).
+
+### `send`
+
+```typescript
+send(value: T): void
+```
+
+Synchronously sends a value. Never suspends. Throws `SendError` if the receiver is closed or the sender is dropped.
+
+<ParamField path="value" type="T" required>
+  The value to send.
+</ParamField>
+
+### `isClosed` / `closed` / `clone` / `close`
+
+Behave identically to the bounded `Sender<T>` counterparts.
+
+---
+
+## `UnboundedReceiver<T>`
+
+The receiving half of an unbounded channel. Identical API to `Receiver<T>`: `recv()`, `tryRecv()`, `close()`, and `Symbol.asyncIterator`.
+
+---
+
+## Error types
+
+### `SendError<T>`
+
+Thrown by `send()` when the channel is closed. The attempted value is available on `error.value`.
+
+```typescript
+try {
+  await tx.send(42);
+} catch (e) {
+  if (e instanceof SendError) {
+    console.log(e.value); // 42
+  }
+}
+```
+
+### `TrySendError<T>`
+
+Thrown by `trySend()`. Has a `kind` field (`'full'` or `'closed'`) and a `value` field with the unsent message.
+
+### `TryRecvError`
+
+Thrown by `tryRecv()`. Has a `kind` field: `'empty'` when no message is available but senders are alive, or `'disconnected'` when all senders are gone.
+
+---
+
+## Edge cases
+
+<AccordionGroup>
+  <Accordion title="Receiver closes before send completes">
+    If `rx.close()` is called while a `tx.send()` is suspended waiting for buffer space, the send promise rejects with `SendError`. Messages already in the buffer can still be read.
+  </Accordion>
+
+  <Accordion title="Multiple senders, one must close last">
+    The channel remains open as long as any cloned sender is alive. Call `close()` or let `Symbol.dispose` run on every sender clone. The receiver returns `null` only when the buffer is empty and the sender count reaches zero.
+  </Accordion>
+
+  <Accordion title="Falsy values are valid messages">
+    `null` is the sentinel for disconnection. Do not send `null` through the channel. All other falsy values (`0`, `false`, `''`, `undefined`) are valid and will be received correctly.
+  </Accordion>
+
+  <Accordion title="channel(0) throws RangeError">
+    The capacity must be at least 1. `channel(0)` and `channel(-1)` throw `RangeError`.
+  </Accordion>
+</AccordionGroup>

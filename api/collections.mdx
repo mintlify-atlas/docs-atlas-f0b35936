@@ -1,0 +1,353 @@
+---
+title: 'collections'
+description: 'Double-ended queue and binary heap priority queue. TypeScript equivalents of std::collections::VecDeque and std::collections::BinaryHeap.'
+keywords: ['collections', 'deque', 'binary heap', 'priority queue', 'VecDeque', 'BinaryHeap', 'queue']
+---
+
+Two collection modules modelled after Rust's standard library collections.
+
+| Module | Rust equivalent | Description |
+|---|---|---|
+| `antiox/collections/deque` | [`std::collections::VecDeque`](https://doc.rust-lang.org/std/collections/struct.VecDeque.html) | Double-ended queue with O(1) push/pop from both ends |
+| `antiox/collections/binary_heap` | [`std::collections::BinaryHeap`](https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html) | Max-heap priority queue with O(log n) push/pop |
+
+---
+
+## Deque
+
+`antiox/collections/deque` — [`std::collections::VecDeque`](https://doc.rust-lang.org/std/collections/struct.VecDeque.html)
+
+A ring-buffer-backed double-ended queue. All push and pop operations at either end are O(1) amortized. The internal buffer grows automatically as needed.
+
+```typescript
+import { Deque } from "antiox/collections/deque";
+
+const dq = new Deque<number>();
+dq.push(1);
+dq.push(2);
+dq.pushFront(0);
+console.log(dq.shift()); // 0
+console.log(dq.pop());   // 2
+```
+
+### Constructor
+
+```typescript
+new Deque<T>()
+```
+
+Creates an empty deque. No initial capacity argument is required — the buffer starts small and doubles in size as needed.
+
+### Methods
+
+<AccordionGroup>
+  <Accordion title="push / pushFront">
+
+  ```typescript
+  push(value: T): void
+  pushFront(value: T): void
+  ```
+
+  - `push(value)` — appends `value` to the back of the deque (equivalent to Rust's `push_back`).
+  - `pushFront(value)` — prepends `value` to the front of the deque (equivalent to Rust's `push_front`).
+
+  ```typescript
+  const dq = new Deque<string>();
+  dq.push("b");
+  dq.pushFront("a");
+  // front → ["a", "b"] ← back
+  ```
+
+  </Accordion>
+
+  <Accordion title="pop / shift">
+
+  ```typescript
+  pop(): T | undefined
+  shift(): T | undefined
+  ```
+
+  - `pop()` — removes and returns the value at the back. Returns `undefined` if empty. Equivalent to Rust's `pop_back`.
+  - `shift()` — removes and returns the value at the front. Returns `undefined` if empty. Named `shift` to match the `Array.prototype.shift` convention. Equivalent to Rust's `pop_front`.
+
+  ```typescript
+  const dq = new Deque<number>();
+  dq.push(1);
+  dq.push(2);
+  dq.push(3);
+
+  dq.shift(); // 1 — from front
+  dq.pop();   // 3 — from back
+  ```
+
+  </Accordion>
+
+  <Accordion title="peekFront / peekBack">
+
+  ```typescript
+  peekFront(): T | undefined
+  peekBack(): T | undefined
+  ```
+
+  Returns the value at the front or back without removing it. Returns `undefined` if the deque is empty. Equivalent to Rust's `front()` and `back()`.
+
+  ```typescript
+  const dq = new Deque<number>();
+  dq.push(10);
+  dq.push(20);
+
+  console.log(dq.peekFront()); // 10
+  console.log(dq.peekBack());  // 20
+  console.log(dq.length);      // 2 — nothing was removed
+  ```
+
+  </Accordion>
+
+  <Accordion title="length / isEmpty / clear">
+
+  ```typescript
+  length: number
+  isEmpty(): boolean
+  clear(): void
+  ```
+
+  - `length` — number of items currently in the deque.
+  - `isEmpty()` — returns `true` when `length === 0`.
+  - `clear()` — removes all items and resets the deque to empty.
+
+  ```typescript
+  const dq = new Deque<number>();
+  console.log(dq.isEmpty()); // true
+  dq.push(1);
+  console.log(dq.length);    // 1
+  dq.clear();
+  console.log(dq.isEmpty()); // true
+  ```
+
+  </Accordion>
+
+  <Accordion title="toArray">
+
+  ```typescript
+  toArray(): T[]
+  ```
+
+  Returns a copy of the deque's contents as an array from front to back. Does not modify the deque.
+
+  ```typescript
+  const dq = new Deque<number>();
+  dq.push(1);
+  dq.push(2);
+  dq.push(3);
+  console.log(dq.toArray()); // [1, 2, 3]
+  console.log(dq.length);    // 3 — deque is unchanged
+  ```
+
+  </Accordion>
+
+  <Accordion title="Symbol.iterator">
+
+  `Deque<T>` implements `Symbol.iterator`, making it usable in `for...of` loops and spread expressions. Iterates from front to back without consuming items.
+
+  ```typescript
+  const dq = new Deque<number>();
+  dq.push(1);
+  dq.push(2);
+  dq.push(3);
+
+  for (const item of dq) {
+    console.log(item); // 1, 2, 3
+  }
+
+  console.log(dq.length); // 3 — deque is unchanged
+  ```
+
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  The `shift()` name follows JavaScript's `Array.prototype.shift` convention (remove from front), rather than Rust's `pop_front`. Similarly, `push()` maps to `push_back`, not `push_front`.
+</Note>
+
+---
+
+## BinaryHeap
+
+`antiox/collections/binary_heap` — [`std::collections::BinaryHeap`](https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html)
+
+A max-heap priority queue backed by an array. `push` and `pop` are O(log n). `peek` is O(1). Accepts a custom comparator to change the ordering or to support non-primitive types.
+
+```typescript
+import { BinaryHeap } from "antiox/collections/binary_heap";
+
+const heap = new BinaryHeap<number>();
+heap.push(3);
+heap.push(1);
+heap.push(5);
+console.log(heap.pop()); // 5 — max element
+console.log(heap.pop()); // 3
+console.log(heap.pop()); // 1
+```
+
+### Constructor
+
+```typescript
+new BinaryHeap<T>(comparator?: (a: T, b: T) => number)
+```
+
+Creates an empty heap. By default, uses natural ordering (`a > b` = higher priority), producing a max-heap. Pass a custom comparator to change the ordering:
+
+- Return a positive number when `a` should be higher priority than `b`.
+- Return a negative number when `b` should be higher priority.
+- Return `0` when equal.
+
+```typescript
+// Min-heap — smallest element has highest priority
+const minHeap = new BinaryHeap<number>((a, b) => b - a);
+minHeap.push(5);
+minHeap.push(1);
+minHeap.push(3);
+console.log(minHeap.pop()); // 1
+```
+
+```typescript
+// Heap of objects ordered by priority field
+const taskQueue = new BinaryHeap<{ priority: number; name: string }>(
+  (a, b) => a.priority - b.priority,
+);
+taskQueue.push({ priority: 1, name: "low" });
+taskQueue.push({ priority: 10, name: "high" });
+console.log(taskQueue.pop()?.name); // "high"
+```
+
+### Methods
+
+<AccordionGroup>
+  <Accordion title="push">
+
+  ```typescript
+  push(value: T): void
+  ```
+
+  Inserts `value` into the heap. O(log n).
+
+  ```typescript
+  heap.push(42);
+  ```
+
+  </Accordion>
+
+  <Accordion title="pop">
+
+  ```typescript
+  pop(): T | undefined
+  ```
+
+  Removes and returns the highest-priority element (the max in a max-heap). Returns `undefined` if the heap is empty. O(log n).
+
+  ```typescript
+  const max = heap.pop();
+  ```
+
+  </Accordion>
+
+  <Accordion title="peek">
+
+  ```typescript
+  peek(): T | undefined
+  ```
+
+  Returns the highest-priority element without removing it. Returns `undefined` if empty. O(1).
+
+  ```typescript
+  const next = heap.peek();
+  console.log(heap.length); // unchanged
+  ```
+
+  </Accordion>
+
+  <Accordion title="length / isEmpty / clear">
+
+  ```typescript
+  length: number
+  isEmpty(): boolean
+  clear(): void
+  ```
+
+  - `length` — number of items in the heap.
+  - `isEmpty()` — returns `true` when `length === 0`.
+  - `clear()` — removes all items.
+
+  ```typescript
+  console.log(heap.isEmpty()); // true
+  heap.push(1);
+  console.log(heap.length);    // 1
+  heap.clear();
+  console.log(heap.isEmpty()); // true
+  ```
+
+  </Accordion>
+
+  <Accordion title="toArray">
+
+  ```typescript
+  toArray(): T[] 
+  ```
+
+  Returns a copy of the heap's contents sorted in descending priority order (highest first). This is a sorted snapshot — it does not modify the heap.
+
+  ```typescript
+  const heap = new BinaryHeap<number>();
+  heap.push(3);
+  heap.push(1);
+  heap.push(5);
+  console.log(heap.toArray()); // [5, 3, 1]
+  console.log(heap.length);    // 3 — heap is unchanged
+  ```
+
+  <Note>
+    Unlike `into_sorted_vec()` in Rust, `toArray()` does not consume the heap. It returns a sorted copy and leaves the original intact.
+  </Note>
+
+  </Accordion>
+
+  <Accordion title="Symbol.iterator">
+
+  `BinaryHeap<T>` implements `Symbol.iterator`. Iterates over the internal heap array in heap order (not sorted order). Use `toArray()` if you need a sorted result.
+
+  ```typescript
+  for (const item of heap) {
+    // heap-ordered traversal, not sorted
+  }
+  ```
+
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  To drain the heap in priority order, repeatedly call `pop()` until it returns `undefined`, or call `toArray()` for a one-shot sorted snapshot.
+</Tip>
+
+---
+
+## Not implemented
+
+The following Rust APIs are not implemented. See [COMPATIBILITY.md](https://github.com/rivet-dev/antiox/blob/main/COMPATIBILITY.md) for full details.
+
+**Deque**
+
+| Rust | Status |
+|---|---|
+| `get()` / `insert()` / `remove()` | Not yet implemented. |
+| `contains()` / `retain()` | Not yet implemented. |
+| `rotate_left()` / `rotate_right()` | Not yet implemented. |
+| `as_slices()` / `make_contiguous()` | N/A — JS arrays are not slices. |
+
+**BinaryHeap**
+
+| Rust | Status |
+|---|---|
+| `peek_mut()` | Not yet implemented. |
+| `drain()` / `drain_sorted()` | Not yet implemented. |
+| `retain()` / `append()` | Not yet implemented. |
+| `into_vec()` / `as_slice()` | N/A — JS has no ownership/slice distinction. |

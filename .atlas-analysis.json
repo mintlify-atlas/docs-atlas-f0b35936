@@ -1,0 +1,81 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Antiox",
+  "projectDescription": "Zero-dependency TypeScript library providing Rust- and Tokio-like async primitives including channels, streams, tasks, and synchronization utilities.",
+  "theme": "luma",
+  "primaryColor": "#241c24",
+  "lightColor": "#f4f4f4",
+  "darkColor": "#cb0404",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "installation", "quickstart"]
+          },
+          {
+            "group": "Concepts",
+            "pages": ["concepts/channels-and-backpressure", "concepts/structured-concurrency", "concepts/rust-comparison"]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Channels",
+            "pages": ["api/mpsc", "api/oneshot", "api/broadcast", "api/watch"]
+          },
+          {
+            "group": "Synchronization",
+            "pages": ["api/mutex", "api/rwlock", "api/semaphore", "api/barrier", "api/notify", "api/once-cell", "api/cancellation-token", "api/drop-guard", "api/select"]
+          },
+          {
+            "group": "Tasks & Time",
+            "pages": ["api/task", "api/time"]
+          },
+          {
+            "group": "Streams & Collections",
+            "pages": ["api/stream", "api/collections"]
+          },
+          {
+            "group": "Utilities",
+            "pages": ["api/panic"]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Bounded and unbounded MPSC channels with backpressure",
+    "Async stream combinators operating on native AsyncIterable<T>",
+    "Task spawning with cooperative AbortSignal cancellation",
+    "Full synchronization primitives: Mutex, RwLock, Semaphore, Barrier, Notify",
+    "Oneshot and broadcast channels for typed request-response and fan-out",
+    "Tree-structured cancellation via CancellationToken",
+    "Zero runtime dependencies, dual ESM/CJS output, fully tree-shakeable",
+    "API mirrors Rust/Tokio naming and semantics"
+  ],
+  "publicApiSurface": [
+    "channel(), unboundedChannel() — antiox/sync/mpsc",
+    "oneshot() — antiox/sync/oneshot",
+    "broadcast() — antiox/sync/broadcast",
+    "watch() — antiox/sync/watch",
+    "select() — antiox/sync/select",
+    "Mutex, RwLock — antiox/sync/mutex, antiox/sync/rwlock",
+    "Semaphore — antiox/sync/semaphore",
+    "Barrier — antiox/sync/barrier",
+    "Notify — antiox/sync/notify",
+    "OnceCell — antiox/sync/once_cell",
+    "CancellationToken — antiox/sync/cancellation_token",
+    "DropGuard — antiox/sync/drop_guard",
+    "spawn(), JoinSet, joinAll(), tryJoinAll(), yieldNow() — antiox/task",
+    "sleep(), timeout(), timeoutAt(), interval() — antiox/time",
+    "map(), filter(), collect(), bufferUnordered(), merge(), pipe(), chunks() — antiox/stream",
+    "Deque — antiox/collections/deque",
+    "BinaryHeap — antiox/collections/binary_heap",
+    "panic(), todo(), unreachable() — antiox/panic"
+  ]
+}

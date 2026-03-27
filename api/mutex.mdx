@@ -1,0 +1,96 @@
+---
+title: Mutex
+description: Async mutex guaranteeing exclusive access to shared data across await points.
+---
+
+A `Mutex` ensures only one task holds the lock at a time. While the lock is held, all other callers to `lock()` suspend until it is released. Unlike a regular synchronous lock, `Mutex` is safe to hold across `await` points.
+
+**Rust equivalent:** [`tokio::sync::Mutex`](https://docs.rs/tokio/latest/tokio/sync/struct.Mutex.html)
+
+## Import
+
+```typescript
+import { Mutex, MutexGuard } from "antiox/sync/mutex";
+```
+
+## Usage
+
+```typescript
+import { Mutex } from "antiox/sync/mutex";
+
+const mutex = new Mutex({ count: 0 });
+const guard = await mutex.lock();
+guard.value = { count: guard.value.count + 1 };
+guard.release();
+```
+
+## `Mutex<T>`
+
+### Constructor
+
+<ParamField path="constructor" type="new Mutex<T>(value: T)">
+  Creates a new mutex wrapping `value`. The value is protected by the lock and can only be accessed through a `MutexGuard`.
+</ParamField>
+
+### Methods
+
+<ParamField path="lock" type="() => Promise<MutexGuard<T>>">
+  Acquires the mutex, suspending the caller until the lock is available. Returns a `MutexGuard` that provides access to the protected value. Call `guard.release()` (or use `using`) when done.
+</ParamField>
+
+<ParamField path="tryLock" type="() => MutexGuard<T>">
+  Attempts to acquire the mutex without waiting. Returns a `MutexGuard` immediately if the lock is free. Throws an error if the mutex is already locked.
+
+  ```typescript
+  try {
+    const guard = mutex.tryLock();
+    console.log(guard.value);
+    guard.release();
+  } catch {
+    console.log("Mutex is already locked");
+  }
+  ```
+</ParamField>
+
+<ParamField path="Symbol.dispose" type="() => void">
+  If the mutex is currently locked, releases the lock (wakes the next waiter). Enables the `using` keyword for automatic cleanup on the mutex itself.
+</ParamField>
+
+## `MutexGuard<T>`
+
+Returned by `lock()` and `tryLock()`. Provides access to the protected value. Releasing the guard unlocks the mutex and wakes the next waiter.
+
+<ParamField path="value" type="T">
+  Get or set the protected value. Throws if the guard has already been released.
+
+  ```typescript
+  const guard = await mutex.lock();
+  console.log(guard.value);      // read
+  guard.value = newValue;        // write
+  guard.release();
+  ```
+</ParamField>
+
+<ParamField path="release" type="() => void">
+  Releases the lock and wakes the next waiter. Calling `release()` more than once is safe (subsequent calls are no-ops).
+</ParamField>
+
+<ParamField path="Symbol.dispose" type="() => void">
+  Calls `release()`. Enables the `using` keyword for automatic cleanup.
+
+  ```typescript
+  {
+    using guard = await mutex.lock();
+    guard.value = { count: guard.value.count + 1 };
+  } // automatically released here
+  ```
+</ParamField>
+
+<Note>
+  `MutexGuard` uses writer-preference fairness: when the lock is released, the longest-waiting caller is woken next. This prevents starvation under contention.
+</Note>
+
+## Related
+
+- [RwLock](/api/rwlock) — multiple concurrent readers or one exclusive writer
+- [Semaphore](/api/semaphore) — limit concurrency to N tasks at a time

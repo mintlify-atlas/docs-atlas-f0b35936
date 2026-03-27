@@ -1,0 +1,134 @@
+---
+title: 'panic'
+description: 'Diverging functions for halting execution. Mirrors panic!, todo!, and unreachable! from Rust std.'
+---
+
+Module: `antiox/panic` — Rust equivalent: [`std::panic!`](https://doc.rust-lang.org/std/macro.panic.html), [`std::todo!`](https://doc.rust-lang.org/std/macro.todo.html), [`std::unreachable!`](https://doc.rust-lang.org/std/macro.unreachable.html)
+
+```typescript
+import { panic, todo, unreachable } from "antiox/panic";
+```
+
+## `panic`
+
+```typescript
+function panic(message?: string): never
+```
+
+Throws an `Error` immediately and halts execution. Use `panic` when an invariant is violated — a condition that should be impossible to reach in correct code.
+
+If no message is provided, the error message defaults to `"explicit panic"`.
+
+```typescript
+import { panic } from "antiox/panic";
+
+function getUser(id: string): User {
+  const user = db.find(id);
+  if (!user) panic(`user ${id} not found`);
+  return user;
+}
+```
+
+<Note>
+  Unlike an ordinary `throw`, `panic` returns `never`, so TypeScript understands that code after a `panic` call is unreachable. This allows it to be used inline in expressions where the surrounding context expects a value.
+</Note>
+
+## `todo`
+
+```typescript
+function todo(message?: string): never
+```
+
+Marks code that is not yet implemented. Throws at runtime with the message `"not yet implemented"`, optionally suffixed with your description. Use `todo` as a placeholder when stubbing out a function or a branch you plan to finish later.
+
+If no message is provided, the error message is `"not yet implemented"`. If a message is provided, the error message is `"not yet implemented: <message>"`.
+
+```typescript
+import { todo } from "antiox/panic";
+
+function processEvent(event: Event): Result {
+  switch (event.type) {
+    case "click": return handleClick(event);
+    case "hover": todo("hover support");
+  }
+}
+```
+
+**Difference from `panic`:** Use `panic` for invariant violations in production code. Use `todo` for branches that are intentionally unfinished during development. The distinction is semantic: `panic` signals something went wrong; `todo` signals something is not done yet.
+
+## `unreachable`
+
+```typescript
+function unreachable(x: never): never
+```
+
+Provides compile-time exhaustiveness checking for `switch` statements. Pass the switched value into `unreachable` in the `default` branch. If you later add a new variant to a union type but forget to handle it in the switch, TypeScript will raise a type error because the unhandled variant is not assignable to `never`.
+
+At runtime, if `unreachable` is somehow reached, it throws an `Error` with the message `"unreachable: <value>"`.
+
+<Note>
+  Exhaustiveness checking is the primary use case for `unreachable`. The runtime throw is a safety net, not the main feature.
+</Note>
+
+### Direction example
+
+```typescript
+import { unreachable } from "antiox/panic";
+
+type Direction = "north" | "south" | "east" | "west";
+
+function move(dir: Direction): [number, number] {
+  switch (dir) {
+    case "north": return [0, 1];
+    case "south": return [0, -1];
+    case "east":  return [1, 0];
+    case "west":  return [-1, 0];
+    default: unreachable(dir); // compile error if any case is missing
+  }
+}
+```
+
+If you add `"up"` to the `Direction` type but forget to add a `case "up"` branch, TypeScript will error on `unreachable(dir)` because `"up"` is not assignable to `never`.
+
+### Actor message example
+
+`unreachable` composes naturally with discriminated union message types in actor-style patterns. Here the `default` branch catches any unhandled message variant at compile time:
+
+```typescript
+import { channel } from "antiox/sync/mpsc";
+import { oneshot, OneshotSender } from "antiox/sync/oneshot";
+import { unreachable } from "antiox/panic";
+import { spawn } from "antiox/task";
+
+type Msg =
+  | { type: "increment"; amount: number }
+  | { type: "get"; resTx: OneshotSender<number> };
+
+const [tx, rx] = channel<Msg>(32);
+
+spawn(async () => {
+  let count = 0;
+  for await (const msg of rx) {
+    switch (msg.type) {
+      case "increment":
+        count += msg.amount;
+        break;
+      case "get":
+        msg.resTx.send(count);
+        break;
+      default:
+        unreachable(msg);
+    }
+  }
+});
+
+// Fire-and-forget
+await tx.send({ type: "increment", amount: 5 });
+
+// Request-response via oneshot channel
+const [resTx, resRx] = oneshot<number>();
+await tx.send({ type: "get", resTx });
+const value = await resRx;
+```
+
+Adding a new variant to `Msg` (for example `{ type: "reset" }`) without adding a corresponding `case "reset"` branch will immediately surface as a TypeScript error at the `unreachable(msg)` call, preventing the bug from reaching runtime.

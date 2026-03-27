@@ -1,0 +1,122 @@
+---
+title: Semaphore
+description: Counting semaphore for limiting the number of concurrent operations.
+---
+
+A `Semaphore` holds a fixed number of permits. Tasks acquire permits before proceeding and release them when done. When all permits are taken, additional callers suspend until a permit becomes available. This is the standard pattern for bounding concurrency.
+
+**Rust equivalent:** [`tokio::sync::Semaphore`](https://docs.rs/tokio/latest/tokio/sync/struct.Semaphore.html)
+
+## Import
+
+```typescript
+import { Semaphore, SemaphorePermit, AcquireError } from "antiox/sync/semaphore";
+```
+
+## Usage
+
+```typescript
+import { Semaphore } from "antiox/sync/semaphore";
+
+// Limit to 3 concurrent operations
+const sem = new Semaphore(3);
+
+async function fetchWithLimit(url: string): Promise<Response> {
+  const permit = await sem.acquire();
+  try {
+    return await fetch(url);
+  } finally {
+    permit.release();
+  }
+}
+```
+
+## `Semaphore`
+
+### Constructor
+
+<ParamField path="constructor" type="new Semaphore(permits: number)">
+  Creates a semaphore with the given number of permits. Throws `RangeError` if `permits` is negative.
+</ParamField>
+
+### Methods
+
+<ParamField path="acquire" type="() => Promise<SemaphorePermit>">
+  Acquires one permit, suspending until one is available. Rejects with `AcquireError` if the semaphore is closed while waiting.
+</ParamField>
+
+<ParamField path="acquireMany" type="(n: number) => Promise<SemaphorePermit>">
+  Acquires `n` permits atomically, suspending until all `n` are available. The returned `SemaphorePermit` holds all `n` permits and releases them together. Throws `RangeError` if `n < 1`.
+
+  ```typescript
+  // Reserve a batch of 5 slots at once
+  const permit = await sem.acquireMany(5);
+  permit.release(); // returns all 5
+  ```
+</ParamField>
+
+<ParamField path="tryAcquire" type="() => SemaphorePermit">
+  Attempts to acquire one permit without waiting. Throws `AcquireError` if no permits are available or the semaphore is closed.
+</ParamField>
+
+<ParamField path="tryAcquireMany" type="(n: number) => SemaphorePermit">
+  Attempts to acquire `n` permits without waiting. Throws `AcquireError` if fewer than `n` permits are available or the semaphore is closed.
+</ParamField>
+
+<ParamField path="availablePermits" type="() => number">
+  Returns the number of permits currently available.
+</ParamField>
+
+<ParamField path="close" type="() => void">
+  Closes the semaphore. All current waiters are rejected with `AcquireError`. Subsequent calls to `acquire()` or `acquireMany()` also reject immediately. Idempotent.
+</ParamField>
+
+<ParamField path="isClosed" type="() => boolean">
+  Returns `true` if the semaphore has been closed.
+</ParamField>
+
+<ParamField path="Symbol.dispose" type="() => void">
+  Calls `close()`. Enables the `using` keyword for automatic cleanup.
+</ParamField>
+
+## `SemaphorePermit`
+
+Represents one or more acquired permits. Must be released to return the permits to the semaphore.
+
+<ParamField path="release" type="() => void">
+  Returns all permits held by this permit back to the semaphore, potentially waking suspended waiters. Calling `release()` more than once is safe (subsequent calls are no-ops).
+</ParamField>
+
+<ParamField path="Symbol.dispose" type="() => void">
+  Calls `release()`. Enables the `using` keyword.
+
+  ```typescript
+  {
+    using permit = await sem.acquire();
+    await doWork();
+  } // permit released automatically
+  ```
+</ParamField>
+
+## `AcquireError`
+
+Thrown or used to reject promises when acquiring from a closed semaphore, or when `tryAcquire`/`tryAcquireMany` cannot immediately satisfy the request.
+
+```typescript
+try {
+  const permit = await sem.acquire();
+} catch (e) {
+  if (e instanceof AcquireError) {
+    console.log("Semaphore closed:", e.message);
+  }
+}
+```
+
+<Note>
+  Permits are granted in FIFO order. A waiter requesting multiple permits via `acquireMany` will not be skipped by later single-permit waiters, preventing starvation.
+</Note>
+
+## Related
+
+- [Mutex](/api/mutex) — binary semaphore (permits = 1) with value protection
+- [Barrier](/api/barrier) — synchronize N tasks at a single point

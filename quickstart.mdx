@@ -1,80 +1,163 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Build a typed counter actor using channels and oneshot."
 ---
 
-## Get started in three steps
+This guide walks through the canonical Antiox example: a counter actor that receives typed messages over an MPSC channel and responds to queries via oneshot channels. It demonstrates the core primitives you will use in almost every Antiox-based system.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
 
-### Step 1: Set up your local environment
+<Step title="Install Antiox">
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+If you have not installed Antiox yet, add it to your project:
 
-### Step 2: Deploy your changes
+```bash
+npm install antiox
+```
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+</Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+<Step title="Define your message type">
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+Antiox channels are fully typed. Start by defining a union type for every message your actor will handle:
 
-### Step 3: Go live
+```typescript
+import { OneshotSender } from "antiox/sync/oneshot";
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+type Msg =
+  | { type: "increment"; amount: number }
+  | { type: "get"; resTx: OneshotSender<number> };
+```
 
-## Next steps
+`increment` is a fire-and-forget message. `get` carries a oneshot sender so the caller can receive a typed response. Using a discriminated union means the compiler enforces exhaustiveness when you handle messages.
 
-Now that you have your docs running, explore these key features:
+</Step>
+
+<Step title="Create the channel">
+
+Create a bounded MPSC channel with a capacity of 32 messages:
+
+```typescript
+import { channel } from "antiox/sync/mpsc";
+
+const [tx, rx] = channel<Msg>(32);
+```
+
+`tx` is the sender. `rx` is the receiver. Only one receiver can exist at a time (single-consumer), but you can clone `tx` to create additional senders.
+
+The capacity of 32 provides backpressure: senders that call `tx.send()` will await when the buffer is full, preventing unbounded memory growth.
+
+</Step>
+
+<Step title="Spawn the actor">
+
+Spawn a background task that owns the receiver and processes messages in a `for await` loop:
+
+```typescript
+import { spawn } from "antiox/task";
+import { unreachable } from "antiox/panic";
+
+spawn(async () => {
+  let count = 0;
+  for await (const msg of rx) {
+    switch (msg.type) {
+      case "increment":
+        count += msg.amount;
+        break;
+      case "get":
+        msg.resTx.send(count);
+        break;
+      default:
+        unreachable(msg);
+    }
+  }
+});
+```
+
+`spawn` runs the function on the next microtask. It returns a `JoinHandle` you can `await` or `.abort()`. The `for await` loop exits cleanly when all senders are dropped, so shutdown is automatic.
+
+`unreachable(msg)` in the `default` branch is a compile-time exhaustiveness check. If you add a new variant to `Msg` without handling it, TypeScript will error because the unhandled variant is not assignable to `never`.
+
+</Step>
+
+<Step title="Send messages and query state">
+
+Send fire-and-forget messages with `tx.send()`. For request-response, create a oneshot channel, embed the sender in the message, and await the receiver:
+
+```typescript
+import { oneshot } from "antiox/sync/oneshot";
+
+// Fire-and-forget
+await tx.send({ type: "increment", amount: 5 });
+
+// Request-response via oneshot channel
+const [resTx, resRx] = oneshot<number>();
+await tx.send({ type: "get", resTx });
+const value = await resRx;
+```
+
+`oneshot()` returns a `[OneshotSender, OneshotReceiver]` pair. The sender can transmit exactly one value; the receiver implements `PromiseLike<T>`, so you can `await` it directly. There are no locks or shared mutable state — the count lives entirely inside the actor's closure.
+
+</Step>
+
+<Step title="Complete example">
+
+Putting it all together:
+
+```typescript
+import { channel } from "antiox/sync/mpsc";
+import { oneshot, OneshotSender } from "antiox/sync/oneshot";
+import { unreachable } from "antiox/panic";
+import { spawn } from "antiox/task";
+
+type Msg =
+  | { type: "increment"; amount: number }
+  | { type: "get"; resTx: OneshotSender<number> };
+
+const [tx, rx] = channel<Msg>(32);
+
+spawn(async () => {
+  let count = 0;
+  for await (const msg of rx) {
+    switch (msg.type) {
+      case "increment":
+        count += msg.amount;
+        break;
+      case "get":
+        msg.resTx.send(count);
+        break;
+      default:
+        unreachable(msg);
+    }
+  }
+});
+
+// Fire-and-forget
+await tx.send({ type: "increment", amount: 5 });
+
+// Request-response via oneshot channel
+const [resTx, resRx] = oneshot<number>();
+await tx.send({ type: "get", resTx });
+const value = await resRx;
+```
+
+</Step>
+
+</Steps>
+
+## What's next
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Channels and backpressure" icon="arrows-left-right" href="/concepts/channels-and-backpressure">
+    Understand how bounded channels apply backpressure and how disconnection is detected.
+  </Card>
+  <Card title="Structured concurrency" icon="diagram-project" href="/concepts/structured-concurrency">
+    Learn how to manage task lifetimes and coordinate shutdown.
+  </Card>
+  <Card title="MPSC API reference" icon="book" href="/api/mpsc">
+    Full reference for the channel, Sender, and Receiver APIs.
+  </Card>
+  <Card title="Rust comparison" icon="code" href="/concepts/rust-comparison">
+    See how Antiox maps onto Tokio and Rust std APIs side by side.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

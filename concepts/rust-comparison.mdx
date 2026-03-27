@@ -1,0 +1,117 @@
+---
+title: "Antiox vs Rust/Tokio"
+description: "How antiox maps Tokio and Rust std primitives onto TypeScript, what it intentionally skips, and how it differs from Effect.ts."
+keywords: ["rust", "tokio", "comparison", "effect", "design", "modules"]
+---
+
+antiox is a deliberate port of Rust and Tokio concurrency primitives to TypeScript. The API surface, naming, and control flow are kept as close to their Rust equivalents as the language allows.
+
+## Module mapping
+
+Every antiox module has a direct Rust equivalent. Names follow Rust/Tokio exactly, with camelCase applied where TypeScript convention requires it.
+
+| antiox module | Rust equivalent | Notes |
+|---|---|---|
+| `antiox/sync/mpsc` | `tokio::sync::mpsc` | `unbounded_channel` → `unboundedChannel` |
+| `antiox/sync/oneshot` | `tokio::sync::oneshot` | Factory named `oneshot()` to disambiguate from mpsc `channel()` |
+| `antiox/sync/broadcast` | `tokio::sync::broadcast` | |
+| `antiox/sync/watch` | `tokio::sync::watch` | |
+| `antiox/sync/mutex` | `tokio::sync::Mutex` | |
+| `antiox/sync/rwlock` | `tokio::sync::RwLock` | |
+| `antiox/sync/semaphore` | `tokio::sync::Semaphore` | |
+| `antiox/sync/barrier` | `tokio::sync::Barrier` | |
+| `antiox/sync/notify` | `tokio::sync::Notify` | |
+| `antiox/sync/once_cell` | `tokio::sync::OnceCell` | |
+| `antiox/sync/cancellation_token` | `tokio_util::sync::CancellationToken` | |
+| `antiox/sync/drop_guard` | `tokio_util::sync::DropGuard` | `Drop` trait → `Symbol.dispose` |
+| `antiox/sync/select` | `tokio::select!` | Macro → function; branches are callbacks returning promises |
+| `antiox/task` | `tokio::task` | `spawn_blocking` N/A (JS is single-threaded) |
+| `antiox/time` | `tokio::time` | |
+| `antiox/stream` | `tokio_stream` / `futures::stream` | |
+| `antiox/panic` | `std::panic!`, `std::todo!`, `std::unreachable!` | |
+| `antiox/collections/deque` | `std::collections::VecDeque` | |
+| `antiox/collections/binary_heap` | `std::collections::BinaryHeap` | |
+
+## Design decisions
+
+<AccordionGroup>
+  <Accordion title="No Result or Option types">
+    Rust uses `Result<T, E>` and `Option<T>` as wrapper types because the language has no nullable values and no exception mechanism.
+
+    TypeScript already has both: `T | null` covers `Option<T>`, and `T | E` union types plus `throw`/`instanceof` cover `Result<T, E>`. Adding wrapper types on top would mean double-encoding the same information.
+
+    antiox does not implement `Result` or `Option`. Use TypeScript's native union types.
+
+    ```typescript
+    // TypeScript already has this
+    function find(id: string): User | null { ... }
+    function parse(s: string): Config | ParseError { ... }
+    ```
+
+    If you want the ergonomics of Rust-style chaining (`.map`, `.andThen`, `.unwrapOr`), see [better-result](https://github.com/dmmulroy/better-result).
+  </Accordion>
+
+  <Accordion title="No wrapper types anywhere">
+    antiox exposes plain `async` functions, `AsyncIterable`, and `Promise` — the same primitives the rest of the JavaScript ecosystem uses. There are no `IO<T>` wrappers, no monadic return types, and no generator-based control flow.
+
+    This means antiox integrates directly with `fetch`, Web Workers, and any third-party async library without adapters.
+  </Accordion>
+
+  <Accordion title="AbortSignal instead of custom cancellation futures">
+    Rust Tokio uses `select!` and `CancellationToken` for cancellation. antiox maps `CancellationToken` directly, and uses the Web platform's `AbortSignal` as the standard cancellation primitive passed to spawned tasks.
+
+    `spawn(async (signal) => ...)` threads the signal through to any API that accepts it (`fetch`, `sleep`, `select`), so cooperative cancellation works without any custom machinery.
+  </Accordion>
+
+  <Accordion title="N/A APIs are truly not applicable">
+    Several Tokio APIs don't exist in antiox because JavaScript makes them unnecessary:
+
+    - `blocking_send` / `blocking_recv` — JS is single-threaded; there is no thread to block.
+    - `spawn_blocking` — no thread pool; use Web Workers directly.
+    - `WeakSender` — JS has garbage collection; channel lifetime is managed by reference counting.
+    - `lock_owned` / `acquire_owned` — JS has no ownership model.
+    - `get_mut` / `into_inner` — JS has no borrowing.
+    - `Instant` — use `Date.now()` or `performance.now()`.
+    - `advance` / `pause` / `resume` on time — use `vi.useFakeTimers()` in tests.
+  </Accordion>
+</AccordionGroup>
+
+## Filling the gaps
+
+Rust crates that antiox intentionally does not cover, and what to use in TypeScript instead:
+
+| Rust crate | TypeScript replacement | Why |
+|---|---|---|
+| `Result` / `Option` | [better-result](https://github.com/dmmulroy/better-result) | Typed Result/Option without wrapper overhead |
+| `tracing` | [pino](https://github.com/pinojs/pino) | Structured logging, zero-overhead when disabled |
+| `serde` | [zod](https://github.com/colinhacks/zod) | Schema validation and parsing |
+| `reqwest` | Native `fetch` | Built into the runtime |
+| `anyhow` / `thiserror` | Native `Error` + `cause` | TS union types + `instanceof` |
+
+## Why not Effect?
+
+[Effect](https://effect.website) is a well-engineered library with a large ecosystem. antiox exists for a different set of constraints.
+
+<AccordionGroup>
+  <Accordion title="Lightweight enough to ship inside libraries">
+    Effect's runtime is substantial. If you're building a library that will be a transitive dependency, you can't reasonably impose Effect on every downstream consumer that didn't opt into it.
+
+    antiox modules are individually tree-shakeable and tiny. The entire mpsc module is under 1.5 KB gzipped. You can use it inside a library without burdening consumers.
+  </Accordion>
+
+  <Accordion title="Mirrors Rust and Tokio APIs">
+    If you're porting a Rust codebase to TypeScript, antiox lets you keep the same structure, naming, and control flow. A Rust developer reading the TypeScript can follow it immediately.
+
+    Effect introduces its own abstractions that don't map to anything in Rust. If your mental model is Tokio, Effect's model adds friction rather than removing it.
+  </Accordion>
+
+  <Accordion title="No new DSL or runtime">
+    Effect uses generator-based control flow, a custom fiber runtime, and a large set of wrapper types. It is effectively a new language layered on top of TypeScript.
+
+    antiox uses plain `async`/`await`, `AbortSignal`, and `AsyncIterator` — primitives that every TypeScript developer already knows, and that work natively with every other library and runtime. There is no Effect-style `pipe`, no `Effect<R, E, A>` type, and no generator syntax required.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  antiox is not a replacement for Effect in applications that have already adopted it. The two libraries target different use cases and different types of users.
+</Note>

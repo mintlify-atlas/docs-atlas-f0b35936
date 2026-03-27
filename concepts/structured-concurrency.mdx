@@ -1,0 +1,229 @@
+---
+title: "Structured concurrency"
+description: "Spawning tasks, managing groups with JoinSet, cooperative cancellation with AbortSignal, and racing async operations with select."
+keywords: ["structured concurrency", "spawn", "JoinSet", "AbortSignal", "CancellationToken", "select", "cancellation"]
+---
+
+Structured concurrency means tasks have a clear, explicit lifetime: they are created in a scope, and that scope is responsible for waiting on them or cancelling them. There are no fire-and-forget tasks that outlive their owner without coordination.
+
+antiox provides this through `spawn`, `JoinSet`, `CancellationToken`, and `select`.
+
+## Spawning tasks
+
+`spawn` runs an async function concurrently and returns a `JoinHandle`. The handle is awaitable — it resolves to the task's return value or rejects with a `JoinError`.
+
+```typescript
+import { spawn } from "antiox/task";
+
+const handle = spawn(async (signal) => {
+  const res = await fetch("https://example.com", { signal });
+  return res.text();
+});
+
+const html = await handle;
+```
+
+The function receives an `AbortSignal` as its first argument. Passing this signal to `fetch`, `sleep`, and other Web API calls enables **cooperative cancellation** — when `handle.abort()` is called, in-flight operations that respect the signal will throw and the task will exit.
+
+```typescript
+const handle = spawn(async (signal) => {
+  while (!signal.aborted) {
+    await doWork();
+  }
+});
+
+handle.abort(); // sets signal.aborted = true
+```
+
+<Note>
+  Cancellation is cooperative. A task is only cancelled when it checks `signal.aborted` or passes `signal` to an API that respects it. Long-running synchronous work won't be interrupted.
+</Note>
+
+## JoinSet — managing groups of tasks
+
+`JoinSet` tracks a collection of spawned tasks and lets you collect their results in completion order.
+
+```typescript
+import { JoinSet } from "antiox/task";
+
+const set = new JoinSet<number>();
+
+set.spawn(async () => {
+  await sleep(300);
+  return 1;
+});
+set.spawn(async () => {
+  await sleep(100);
+  return 2;
+});
+set.spawn(async () => {
+  await sleep(200);
+  return 3;
+});
+
+// Results arrive in completion order: 2, 3, 1
+for await (const result of set) {
+  console.log(result);
+}
+```
+
+The `for await` loop exits when all tasks in the set have completed. You can also call `set.joinNext()` manually to retrieve one result at a time, or `set.abortAll()` to cancel every running task at once.
+
+`JoinSet` implements `Symbol.dispose`, so using it in a `using` block will abort any remaining tasks when the block exits:
+
+```typescript
+using set = new JoinSet<void>();
+
+set.spawn(async (signal) => {
+  await longRunningWork(signal);
+});
+
+// If an error throws here, the set's dispose cancels the running task
+await doOtherWork();
+```
+
+## CancellationToken — tree-structured cancellation
+
+`AbortSignal` handles one task. When you need to cancel an entire subtree of tasks, use `CancellationToken`. Cancelling a parent automatically propagates to all its children.
+
+```typescript
+import { CancellationToken } from "antiox/sync/cancellation_token";
+import { spawn } from "antiox/task";
+
+const root = new CancellationToken();
+const child1 = root.child();
+const child2 = root.child();
+
+spawn(async () => {
+  await child1.cancelled();
+  console.log("child1 cancelled");
+});
+
+spawn(async () => {
+  await child2.cancelled();
+  console.log("child2 cancelled");
+});
+
+root.cancel(); // both children are also cancelled
+```
+
+A child token can be cancelled independently without affecting the parent:
+
+```typescript
+child1.cancel(); // only child1 is cancelled; root and child2 are unaffected
+```
+
+This is useful for per-request cancellation in a server: each request gets a child token, and shutting down the server cancels the root, which propagates to every active request.
+
+<Tip>
+  `CancellationToken` implements `Symbol.dispose`. Using it in a `using` block ensures it is cancelled and detached from its parent when the block exits, preventing memory leaks from accumulated children.
+</Tip>
+
+## `for await` as a shutdown pattern
+
+Because mpsc channels detect disconnection, a `for await` loop is a natural way to express "process messages until the producer shuts down":
+
+```typescript
+import { channel } from "antiox/sync/mpsc";
+import { spawn } from "antiox/task";
+
+const [tx, rx] = channel<string>(32);
+
+const worker = spawn(async () => {
+  for await (const msg of rx) {
+    await process(msg);
+  }
+  await runShutdownCleanup();
+});
+
+// Closing the sender signals the worker to finish
+tx.close();
+await worker;
+```
+
+When `tx.close()` is called, the next `recv()` after the buffer empties returns `null`, ending the loop. The worker completes its shutdown logic and resolves cleanly.
+
+## select — racing async operations
+
+`select` runs multiple async branches concurrently and returns as soon as the first one completes. Losing branches receive an `AbortSignal` that is aborted after the winner resolves.
+
+```typescript
+import { select } from "antiox/sync/select";
+import { sleep } from "antiox/time";
+
+const result = await select({
+  msg: (signal) => rx.recv(),
+  timeout: (signal) => sleep(5000, signal),
+});
+
+if (result.key === "msg") {
+  console.log("got message:", result.value);
+} else {
+  console.log("timed out");
+}
+```
+
+TypeScript narrows `result.value` to the return type of the winning branch based on `result.key`. This means you get full type safety without casting.
+
+A common use of `select` is pairing a channel receive with a cancellation signal:
+
+```typescript
+import { select } from "antiox/sync/select";
+import { CancellationToken } from "antiox/sync/cancellation_token";
+
+const token = new CancellationToken();
+
+const result = await select({
+  msg: (_signal) => rx.recv(),
+  cancelled: (_signal) => token.cancelled(),
+});
+
+if (result.key === "cancelled") {
+  // graceful shutdown
+}
+```
+
+## Putting it together
+
+The following example combines all the patterns above. An actor task processes messages from an mpsc channel, with tree-structured cancellation for clean shutdown:
+
+```typescript
+import { channel } from "antiox/sync/mpsc";
+import { oneshot, OneshotSender } from "antiox/sync/oneshot";
+import { spawn, JoinSet } from "antiox/task";
+import { CancellationToken } from "antiox/sync/cancellation_token";
+import { unreachable } from "antiox/panic";
+
+type Msg =
+  | { type: "increment"; amount: number }
+  | { type: "get"; resTx: OneshotSender<number> };
+
+const [tx, rx] = channel<Msg>(32);
+const token = new CancellationToken();
+
+// Actor: owns state, processes commands
+const actor = spawn(async () => {
+  let count = 0;
+  for await (const msg of rx) {
+    switch (msg.type) {
+      case "increment":
+        count += msg.amount;
+        break;
+      case "get":
+        msg.resTx.send(count);
+        break;
+      default:
+        unreachable(msg);
+    }
+  }
+});
+
+// Request-response
+const [resTx, resRx] = oneshot<number>();
+await tx.send({ type: "get", resTx });
+const value = await resRx;
+
+// Shutdown
+tx.close();
+await actor;
+```
